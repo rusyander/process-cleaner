@@ -27,6 +27,8 @@ English UI, tray operation and a schedule.
 | **Scan** | finds abandoned processes and terminates them, purges Standby Memory |
 | **Dev Cleanup** | bulk-kills dev runtimes and frees busy dev ports |
 | **Disk Cleanup** | analyzes and deletes junk by category, optional winapp2 rules |
+| **Disk** | folder map with sizes, large files, empty folders, duplicates; deletion to the Recycle Bin only |
+| **Browsers** | bookmarks by folder, saved tab groups, reading list, currently open tabs |
 | **Docker** | disk-usage overview, removal of unused data, vhdx compaction |
 | **Programs** | installed software list, uninstall via the program's own uninstaller |
 | **Updates** | finds outdated programs and updates them via winget / Chocolatey |
@@ -47,15 +49,23 @@ English UI, tray operation and a schedule.
   gradle/cargo/go/NuGet), system junk (temp, Recycle Bin, Windows Update, dumps),
   browser and app caches (Discord/Slack/Teams/Spotify), old logs, driver installer
   leftovers and `Windows.old`. Optionally plugs in **winapp2 rules** — an open database
-  covering thousands of programs. Shows sizes first, deletes only after confirmation.
+  covering thousands of programs. Shows sizes first, deletes only after confirmation. Every
+  category has **contents** — its folders with check boxes — and any folder can be excluded for good.
+- **Disk.** Shows where the space went: a folder tree with sizes and shares, large files,
+  empty folders and content duplicates (SHA-256). Deletes to the Recycle Bin only.
 - **Docker.** Shows disk usage (`docker system df`) and removes unused data: stopped
   containers, images, volumes, build cache, everything at once.
 - **Programs.** Lists installed software and uninstalls it via its own uninstaller.
 - **Updates.** Scans the machine for programs with newer versions available, rates how big
   each update is (major / minor / patch) and installs the selected ones — using **winget**
   and **Chocolatey**, several packages per command.
-- **Startup.** Lists all installed programs with a "in Windows startup" toggle: check to
-  add, uncheck to remove (registry `Run` keys + the Startup folder).
+- **Browsers.** Shows everything that piles up in browser profiles: the bookmark folder
+  tree, saved tab groups, the reading list and the tabs open right now — each with the
+  date it was added and the date it was last opened. Bookmarks can be cleaned up: delete,
+  move, merge folders, find repeats and check whether the links are still alive.
+- **Startup.** Lists all installed programs with a "starts at sign-in" toggle: uncheck to
+  disable the way Task Manager does (the entry and its arguments stay), check to re-enable
+  or add (registry `Run` keys + the Startup folders).
 - **Automation.** Process auto-clean timer (every 1–24 h), start with Windows (via Task
   Scheduler), tray operation, cleanup history, flexible settings.
 - **Look & feel.** Dark/light theme (or system) + dark title bar; RU/EN UI language.
@@ -69,7 +79,12 @@ English UI, tray operation and a schedule.
   criteria match at once (dead parent + idle + no windows/ports/children), with
   confirmation. The exception is the Dev Cleanup buttons — a deliberate by-name sledgehammer.
 - **Doesn't do disk-wide duplicate search** and never deletes anything from your projects,
-  code, `DriverStore`, System32 or drive roots. Only known junk paths are cleaned.
+  code, System32 or drive roots. Driver packages in `DriverStore` are removed only via
+  `pnputil` and only superseded ones. Only known junk paths are cleaned.
+- **Does not treat saves and settings as junk.** Game-save folders (`Saved Games`, `My Games`,
+  `saves` / `SaveGames`, Steam cloud saves under `userdata`, Xbox saves) never become a target,
+  neither via built-in rules nor via winapp2, and profile roots (Documents, Desktop, AppData) are
+  never deleted. Any folder of any category can be excluded from cleanup for good via "Contents…".
 - **Doesn't clean disk, uninstall programs or update them on a schedule** — manual only,
   with preview and confirmation. The timer only runs process cleanup.
 - **Doesn't touch the registry when updating programs.** The package manager (winget /
@@ -203,7 +218,8 @@ Termination itself: first gracefully (WM_CLOSE), wait up to 3 seconds, then forc
 ### Dev Cleanup
 Bulk termination by group: all Node / Python / Java / Vite / Webpack / npm / pnpm /
 yarn·bun / Docker Compose / Go·Cargo·Deno. Plus a list of processes holding popular
-dev ports (3000, 5173, 8080, 4200 …) that you can terminate.
+dev ports (3000, 5173, 8080, 4200 …) that you can terminate. Listeners are found on both
+IPv4 and IPv6 (Node and Vite listen on `::` by default).
 
 > Dev Cleanup terminates **by name regardless of activity** (except the whitelist) —
 > a deliberate sledgehammer.
@@ -211,19 +227,62 @@ dev ports (3000, 5173, 8080, 4200 …) that you can terminate.
 ### Disk cleanup (manual only)
 A dedicated tab. Flow: **Analyze → preview with sizes → delete selected**. There is
 intentionally no automatic disk cleanup (files are less reversible than processes).
-Only **known junk paths** are cleaned — no disk-wide duplicate search. Categories:
-- **Dev caches** — npm / pnpm / yarn / pip / gradle / cargo / go / NuGet (regenerated).
-- **System junk** — `%TEMP%`, `Windows\Temp`, Recycle Bin, Windows Update cache,
-  crash dumps, error reports.
-- **Browser caches** — Chrome / Edge / Brave / Firefox, cache only (no passwords/cookies).
-- **App caches** — Discord / Slack / Teams / Spotify, cache only.
-- **Old logs** — CBS/DISM logs, npm/yarn, install reports.
-- **Old drivers + Windows.old** — NVIDIA/AMD installer leftovers, old Windows folder.
+Only **known junk paths** are cleaned; the folder map, large files, empty folders and
+duplicates live on the neighbouring "Disk" tab. Categories:
+- **Dev caches** — npm / pnpm / yarn / bun / pip / uv / poetry / gradle / cargo / go / NuGet /
+  Composer / TypeScript, old Playwright browser builds (all regenerated).
+- **Dev: downloaded toolchains** — Playwright/Puppeteer/Cypress browsers, electron-builder,
+  dotslash, Expo Go, the Maven repository. They re-download, but slowly — unchecked by default.
+- **System junk** — `%TEMP%`, `Windows\Temp`, service-profile temp, Recycle Bin, Windows
+  Update cache, crash dumps, error reports, Delivery Optimization. `Prefetch` is deliberately
+  left alone: it is the program-launch cache, weighs megabytes, and everything starts slower
+  after it is deleted until Windows rebuilds it.
+- **Windows caches** — thumbcache/iconcache, DirectX and GPU caches (NVIDIA/AMD/Intel), font
+  cache, notification images, RDP cache — Windows rebuilds them itself.
+- **Microsoft Store app caches** — `INetCache` / `Temp` / `TempState` of every UWP package and
+  the WebView cache of the new Teams. `LocalState` and app settings are untouched.
+- **Browser caches** — Chrome / Edge / Brave / Yandex / Opera / Vivaldi / Firefox, cache only
+  (no passwords, cookies or history).
+- **App caches** — Discord / Slack / Teams / Spotify / VS Code / JetBrains / Steam /
+  Telegram (incl. `media_cache`) / Figma / game launchers, cache only.
+- **NVIDIA: caches and old versions** — old NGX model versions (DLSS, Broadcast, etc.).
+  NGX Updater downloads new versions into `ProgramData\NVIDIA\NGX\models\<model>\versions`
+  and never removes old ones — gigabytes pile up within a year. Plus the NVIDIA App/Overlay
+  cache, the driver downloader, `C:\NVIDIA`. The newest version of each model and the driver
+  itself stay.
+- **Old logs** — CBS/DISM/Windows setup logs, Update Orchestrator, npm/yarn/gradle,
+  Docker Desktop, OneDrive, Zoom, Chocolatey.
+- **Recent file lists** — Recent documents, jump lists (privacy).
+- **Old program versions** — previous-version copies left behind by auto-updates: Squirrel
+  apps (Postman, Figma, Discord, etc. keep an `app-<version>` folder for every downloaded
+  version) and WPS Office (the previous version folder next to the current one). The current
+  version is picked by number, for WPS from the registry. Unchecked by default.
+- **Windows update and driver leftovers** — `Windows.old`, `$Windows.~BT`, `$WinREAgent`,
+  `$GetCurrent`, `ESD`, unpacked AMD/Intel installers, `NVIDIA Installer2`. Update leftovers
+  are deleted only when older than 10 days — the period Windows itself keeps them for rollback.
+- **Old driver packages (DriverStore)** — versions superseded by newer ones and bound to no
+  device. The list comes from `pnputil /enum-drivers`, removal is `pnputil /delete-driver`
+  without `/force`: if the system still needs a package, pnputil refuses on its own.
+  Folders inside `FileRepository` are never deleted directly.
+- **Windows component store (WinSxS)** — superseded component versions left by updates.
+  The size comes from `DISM /AnalyzeComponentStore`, cleanup is `DISM /StartComponentCleanup`
+  (the only supported way). Superseded updates cannot be rolled back afterwards, so the
+  category is unchecked by default.
 
-Guards: locked files and reparse points (junctions) are skipped; `DriverStore`,
-System32, drive roots, code and projects are never touched. Files modified within the last
-N minutes are kept (N is configurable, 10 by default). Every cleanup is written to
-`clean-YYYY-MM.log` — the "Log" button opens it.
+Guards: locked files and reparse points (junctions) are skipped; `DriverStore` (only via
+`pnputil`), `Windows\Installer`, WinSxS, System32, drive roots, code and projects are never
+touched directly. Files modified within the last N minutes are kept (N is configurable, 10 by
+default). Categories holding several versions of one thing always keep the newest. Every
+cleanup is written to `clean-YYYY-MM.log` — the "Log" button opens it.
+
+**Category contents.** Double-click a category (or the "Contents…" button, or Enter) to open
+the list of its folders: path, size, file count and a note — contents only or the whole folder,
+an age filter, how many folders were inaccessible. Largest first. Untick what should not be
+deleted — the choice is stored in `config.json` and applied on every analysis and cleanup until
+you tick it back. Excluded folders are left out of the category size, and the category
+description gains a "disabled by you: N" marker. Driver packages are excluded the same way,
+one by one; the component store (DISM) has no contents list. Double-click a row or "Open
+folder" to show it in Explorer.
 
 **winapp2 rules (optional).** The "winapp2 rules" button downloads
 [Winapp2.ini](https://github.com/MoscaDotTo/Winapp2) — an open database with thousands of
@@ -232,9 +291,47 @@ cleanup rules for specific programs — and adds them to the built-in categories
 exclusions (`ExcludeKey`) are skipped whole, and registry rules are ignored — this app never
 cleans the registry. winapp2 results are never checked automatically.
 
+### Disk
+A dedicated tab: **where the space went and what can be removed by hand**. Pick a drive or
+folder ("Where to look"), press **Scan** — on the left a folder tree with size, share of the
+parent folder and file count (expands on demand), on the right a list in one of three modes:
+- **Large files** — files at or above the "Files from N MB" threshold (1 MB by default, the
+  value is remembered) in the selected folder and its subfolders, largest first. The threshold
+  can be raised after a scan — the list narrows at once; lowering it below the value the scan
+  ran with needs a rescan (the app says so).
+- **Empty folders** — topmost empties only: if `a\b\c` is empty, `a` is listed, and the number
+  of nested empties inside is shown in the line above the list.
+- **Duplicates** — files at or above the same threshold with identical content. Comparison runs in three
+  steps: size → first 64 KB → full SHA-256, so only real candidates are read in full. The
+  oldest file of a group comes first (usually the original); **All** ticks every copy in each
+  group except that one.
+
+Deletion goes to the **Recycle Bin** only, as one shell operation and after confirmation;
+everything restores normally from the bin. Nothing is ticked by default. Double-clicking a
+folder or **Open folder** shows it in Explorer.
+
+Taken care of:
+- Inside `Windows`, `Program Files`, `ProgramData`, `AppData\Local\Packages`, `node_modules`
+  and `.git` no empty folders or duplicates are offered — identical files and empty
+  directories are normal there, and deleting them breaks programs.
+- Reparse points (junctions, symlinks, OneDrive folders) are not expanded and never counted
+  twice; the tree shows per folder how many links were skipped and where access was denied.
+  Paths longer than 260 characters are read, hashed and recycled (the shell receives them
+  as 8.3 short names; on a volume with short names disabled such a path cannot go to the
+  Recycle Bin — the app reports how many were left).
+- Hidden and system files never appear among duplicates.
+- Usage bars for all drives sit above the tree. The scan is not cancelled when you switch
+  tabs; **Stop** interrupts it.
+- The `/disk [path]` switch opens the tab and scans the path right away — handy for a
+  shortcut or an Explorer call.
+
 ### Programs (uninstall)
 A tab listing installed programs (name, version, publisher, size). Check and uninstall
-them through the app — the program's own uninstaller is launched.
+them through the app — the program's own uninstaller is launched. Several checked
+programs are uninstalled one after another: the next uninstaller starts once the previous
+one has exited (two MSI installers cannot run at the same time). When an uninstaller is
+missing (the program was deleted together with its folder, the registry entry remained),
+the app reports it with the path; the list is re-read when the run is over.
 
 ### Program updates
 This tab finds outdated programs across the machine and updates them. Flow:
@@ -294,13 +391,77 @@ system language — parsing the localized output text would be guesswork.
 > An installer may close and restart the program it updates. Save your work before updating
 > something that is open.
 
+### Browsers
+
+This tab shows what accumulates in browser profiles over the years and is normally never
+visible as a whole. Nothing is installed and nothing attaches to the browser — everything
+is read straight from the profile files.
+
+**What is found automatically.** Every profile of every installed Chromium-based browser:
+Chrome (including Beta / Dev / Canary), Edge, Yandex Browser, Brave, Vivaldi, Opera and
+Opera GX, Chromium. Each profile is shown under its real name, not its folder name.
+
+**What is shown for each profile**
+
+| Section | What is inside | Where it comes from |
+|---|---|---|
+| **Bookmarks** | the folder tree; each folder shows how many links sit in it directly and how many including subfolders | the `Bookmarks` file |
+| **Duplicate URLs** | the same address saved in several folders | computed |
+| **Tab groups** | saved groups: name, color, contents, when it last changed | the sync database |
+| **Reading list** | saved-for-later pages, read and unread | the sync database |
+| **Open tabs** | the current session: windows, tabs and their groups | the `Sessions` files |
+
+Every row shows the name, the address, where it lives, when it was added and when it was
+last opened — which is exactly what tells you what can go.
+
+**What you can do**
+
+- **Delete selected** — the ticked links and whole folders.
+- **Move to…** — move the ticked items into another folder. The "Merge" checkbox in the
+  dialog moves the *contents* of the ticked folders and deletes the folders themselves,
+  so two folders about the same thing collapse into one.
+- **Duplicates** — lists every repeated address and pre-ticks the redundant copies,
+  leaving the one you opened most recently untouched.
+- **Check links** — walks the addresses in the current list and reports what the site
+  answered (`OK`, `404`, `no DNS`, `timeout`…). It is network work and it is not fast,
+  so it only runs on demand and has a "Stop" button. A `403` usually means bot protection
+  rather than a dead link: the site answers that way to a request that is not a browser.
+  Check such addresses by hand before deleting them.
+- Right-click: open in browser, copy the address, check all, uncheck all. In the tree:
+  "Delete empty folders", "Delete this folder" and "Save group as bookmarks".
+
+**What cannot be changed, and why**
+
+Tab groups and the reading list live in the browser's sync database. Deleting them from
+a file is impossible: the browser holds its own state in memory and would restore the
+record from the server. So those sections are view-only. If a group is no longer needed
+but its links are worth keeping, use **"Save group as bookmarks"**: it creates a folder
+under "Other bookmarks" holding every tab of the group, after which the group itself can
+safely be deleted in the browser.
+
+**How bookmarks are kept safe**
+
+- Editing is possible **only while the browser is fully closed**. A running browser keeps
+  bookmarks in memory and rewrites the file on exit, so the edit would simply be lost.
+- **Before every write** the file is copied into `%APPDATA%\WindowsProcessCleanerrowser-backups\`
+  with a timestamp. Those copies are never deleted automatically.
+- The bookmarks file carries a checksum computed by the browser itself. The program first
+  recomputes it for the **untouched** file and compares it with the stored one. No match
+  means this browser build uses its own algorithm, and the profile is switched to
+  view-only: better to change nothing than to hand the browser a file it considers broken.
+- The write goes through a temporary file rather than over the original.
+
 ### Startup
-A tab listing all installed programs with a checkbox toggle. Checked = the program is in
-Windows startup; check to add, uncheck to remove. Reads and writes autostart from the
-registry (`HKCU\...\Run`, `HKLM\...\Run`) and the Startup folders (user + common). Startup
-entries that aren't in the installed-programs list (scripts, shortcuts) are marked orange
-and can be disabled too. Adding always goes to the per-user `HKCU\...\Run`; by default, if
-a program isn't in startup, the toggle is off.
+A tab listing all installed programs with a checkbox toggle. Checked = the program starts
+at Windows sign-in. Unchecking disables the entry the way Task Manager does: a flag in
+`...\Explorer\StartupApproved`, while the `Run` value with its command-line arguments or the
+shortcut stays in place, so the toggle can be turned back on. Checking enables an existing
+entry, or adds one to the per-user `HKCU\...\Run` when there is none. Reads the registry
+(`HKCU\...\Run`, `HKLM\...\Run`, the 32-bit `Run`) and the Startup folders (user + common);
+entries disabled in Task Manager or in Settings → Startup apps are shown unchecked with a
+"disabled" mark. Startup entries that aren't in the installed-programs list (scripts,
+shortcuts) are marked orange and can be toggled too. Nothing is deleted: the program never
+removes registry values or shortcuts.
 
 ### Docker
 A tab for Docker cleanup (requires the Docker CLI + a running daemon). Buttons: disk
@@ -330,15 +491,24 @@ uninstallation are **never** run by the timer — manual only.
 The tray icon changes color: green — clean, orange — candidates found. Double-click
 opens the window. Right-click menu: Scan, Clean, Purge Standby Memory, toggle
 auto-clean, restart as administrator, exit. Closing the window minimizes the app to
-tray (it keeps running in the background).
+tray (it keeps running in the background). If an irreversible operation is running at
+that moment (deleting files, moving to the Recycle Bin, installing updates, Docker prune
+or disk compaction), the tray hint names it, and “Exit” / “Restart as administrator”
+ask first: an interrupted compaction would leave Docker stopped, an interrupted install
+a half-installed package.
 
 ### Start with Windows
 A checkbox in settings. Implemented via **Task Scheduler** with highest privileges
 (`schtasks /RL HIGHEST`), so there is no UAC prompt at logon.
 
 ### Themes
-Light / dark / **system** (default — follows the Windows theme). Switchable in
-settings, applied immediately, including the window title bar.
+Light / dark / **system** (default — follows the Windows theme, including a live dark/light
+switch without a restart). Switchable in settings, applied immediately, including the window
+title bar. Lists, trees, text fields and drop-downs get a soft rounded border in the theme
+colour instead of the sharp system line; buttons are drawn with anti-aliased rounded corners.
+The opened drop-down list is themed too: roomy rows, the same highlight as the lists, a dark
+list window in the dark theme. The multi-line lists on the Settings page stretch to the free
+window height.
 
 ### Settings (saved)
 
@@ -348,6 +518,8 @@ settings, applied immediately, including the window title bar.
   touch Program Files", start with Windows, start minimized to tray.
 - **Performance** — background CPU monitoring and its period (5..300 s, 15 by default),
   emptying the working sets of all processes (off by default — it slows the system down).
+  Idle time is measured only by monitoring ticks: with monitoring off there can be no
+  termination candidates, and the scan summary says so explicitly.
 - **Disk cleanup** — "keep files newer than N minutes", cleanup logging, list of paths to
   never clean.
 - **Program updates** — show packages with an unknown installed version, query Chocolatey,
@@ -382,11 +554,13 @@ settings opens it.
 
 | File | What it is |
 |---|---|
-| `config.json` | all settings |
+| `config.json` | all settings, including the excluded category folders. Written through a temporary file so a crash cannot leave an empty config; a damaged copy is kept as `config.json.corrupt` |
 | `history.json` | process-cleanup history |
 | `clean-YYYY-MM.log` | disk-cleanup log (what was deleted and how much was freed) |
 | `updates-YYYY-MM.log` | program-update log |
 | `winapp2.ini` | the downloaded winapp2 rule database, if you fetched it |
+| `browser-backups\` | copies of the bookmarks files, taken before every edit |
+| `crash.log` | stack of the last unhandled error, if the app crashed (one message box is shown; attach the file to a bug report) |
 
 ---
 
@@ -403,11 +577,21 @@ The app always runs as administrator. This is required to purge Standby Memory v
   `OpenProcessToken`/`GetTokenInformation` (process owner),
   `SendMessageTimeout(WM_CLOSE)`, `TerminateProcess` (via `Process.Kill`),
   `NtSetSystemInformation` (Standby Memory), `GlobalMemoryStatusEx`,
-  `DwmSetWindowAttribute` (dark title bar).
+  `DwmSetWindowAttribute` (dark title bar), `FindFirstFileExW` (disk walk with `\\?\` long
+  paths), `SHFileOperationW` (Recycle Bin), `SetWindowTheme` (dark scroll bars).
 - **Program updates:** `winget.exe` and `choco.exe` are invoked. `winget upgrade` has no
   machine-readable output (a table only), so the table is parsed by the column start
   positions taken from the header line and mapped by their **order**, not by header names —
-  that way parsing also works on a localized winget.
+  that way parsing also works on a localized winget. Positions are counted in terminal cells,
+  not characters: CJK, Hangul and full-width characters take two cells, so a row with such a
+  name is shorter than the header. winget's second table («require explicit targeting») is
+  parsed by its own header.
+- **Uninstall:** the registry `UninstallString` is split into exe and arguments by the app
+  itself and started via `ShellExecute`, not `cmd /c`: cmd strips the quotes from a path
+  containing `&`, cannot start an unquoted path with spaces (Android Studio, Steam,
+  InstallShield) and breaks on commands with four quotes (NVIDIA via `RunDll32`, Docker
+  Desktop). `MsiExec /I{GUID}` is the repair dialog, so MSI packages are uninstalled with
+  `/X{GUID}` — what "Programs and Features" does.
 - **Single-instance** — a named `Mutex` (`Local\WindowsProcessCleaner.singleinstance`). The
   local TCP port **49876** is only used to ask an already running instance to show its
   window; if the port is taken, the app still starts normally.
@@ -419,15 +603,22 @@ The app always runs as administrator. This is required to purge Standby Memory v
 - Consequently "5 minutes idle" is counted from the moment the app started observing the
   process, not from when it launched.
 - **Command-line switches:** `/tray` — start minimized, `/auto` — run a process auto-clean
-  and exit, `/analyze` — measure disk junk without deleting anything.
+  and exit, `/analyze` — measure disk junk without deleting anything (the `TOTAL` line is
+  free of double counting of nested targets, `sum=` is the plain category sum), `/disk [path]`
+  — open the Disk tab and scan the path right away.
+- **Display scaling (DPI):** the window scales to 125/150 % (`AutoScaleMode.Dpi`), button
+  bars wrap onto the next line, the settings columns are computed from the label widths, and
+  the minimum window size never exceeds the screen working area.
+- **Crashes:** an unhandled exception (UI thread and background threads) is written to
+  `crash.log` in the data folder, then a single message is shown instead of a silent exit.
 
 ## Project files
 
 | File | Purpose |
 |------|---------|
-| `ProcessCleaner.cs` | the entire application code |
+| `src\*.cs` | application code, one file per area: `Program.cs` (entry, switches), `Engine*.cs` (logic: processes, cleanup, disk, drivers, winapp2, updates, programs, startup, Docker), `MainForm*.cs` (window, one file per tab), `Native.cs` (WinAPI), `Theme.cs`, `Json.cs`, `Browser*.cs`, `FastListView.cs` |
 | `app.manifest` | manifest (requireAdministrator, DPI) |
 | `icon.ico` | application icon (embedded into the exe) |
-| `build.bat` | build via the built-in csc.exe |
+| `build.bat` | builds all `src\*.cs` via the built-in csc.exe |
 | `run.bat` | build if needed and run |
 | `README.md` / `README.en.md` | documentation (RU / EN) |

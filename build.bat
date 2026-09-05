@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem ==== Windows Process Cleaner - build with the built-in Windows csc.exe ====
+rem ==== Windows Process Cleaner - build with the built-in Windows csc.exe (all src\*.cs) ====
 rem No installation required: .NET Framework ships with Windows.
 
 set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
@@ -25,7 +25,7 @@ if exist "icon.ico" set ICONOPT=/win32icon:icon.ico
   /reference:System.Drawing.dll ^
   /reference:System.Windows.Forms.dll ^
   /reference:System.Runtime.Serialization.dll ^
-  ProcessCleaner.cs
+  src\*.cs
 
 if errorlevel 1 (
   echo.

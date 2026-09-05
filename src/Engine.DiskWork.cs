@@ -1,0 +1,455 @@
+﻿// Windows Process Cleaner — обход папок, анализ и удаление целей, защита путей, журнал очистки
+// Сборка: build.bat (csc.exe из .NET Framework 4.x компилирует все src\*.cs).
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
+using System.Security.Principal;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+namespace WindowsProcessCleaner
+{
+    public partial class Engine
+    {
+        // Отмена длинного анализа/удаления: пользователь ушёл с вкладки или закрыл окно.
+        private volatile bool _cancelDisk;
+        public void CancelDiskWork() { _cancelDisk = true; }
+        public void ResetDiskCancel() { _cancelDisk = false; }
+        public bool DiskCancelled { get { return _cancelDisk; } }
+
+        // Обход каталога БЕЗ сбора всех путей в память и БЕЗ рекурсии.
+        // Старая версия складывала в List<string> путь каждого файла (для %TEMP% или
+        // .nuget\packages это сотни тысяч строк и сотни МБ), а потом делала на каждый
+        // ещё один new FileInfo(f).Length — второй поход к ФС за уже полученными данными.
+        // EnumerateFileSystemInfos отдаёт размер сразу, стек вместо рекурсии не боится
+        // глубоких node_modules.
+        // Посетитель файла: полный путь, размер и атрибуты — всё из WIN32_FIND_DATA,
+        // без второго похода к ФС за каждым файлом.
+        private delegate void FileVisitor(string path, long size, uint attrs);
+
+        // Страховка от циклов, которые не помечены точкой повторного разбора.
+        // Реальных деревьев такой глубины не бывает.
+        private const int MaxWalkDepth = 96;
+
+        private static bool IsDotName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return true;
+            return name.Trim(' ', '.').Length == 0;
+        }
+
+        private static long FileTimeOf(System.Runtime.InteropServices.ComTypes.FILETIME ft)
+        {
+            return ((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime;
+        }
+
+        // Пути из настройки «Не чистить эти пути»: полный путь, без хвостового «\», в нижнем
+        // регистре. Считается один раз на обход, не на файл.
+        private List<string> ExcludeList()
+        {
+            List<string> l = new List<string>();
+            foreach (string ex in Config.CleanExclude)
+            {
+                if (string.IsNullOrEmpty(ex)) continue;
+                string exl;
+                try { exl = Path.GetFullPath(ex.Trim()).TrimEnd('\\').ToLowerInvariant(); } catch { continue; }
+                if (exl.Length > 0) l.Add(exl);
+            }
+            return l;
+        }
+
+        // Путь равен исключению или лежит внутри него (pathLower — полный путь в нижнем регистре).
+        private static bool IsExcluded(string pathLower, List<string> excl)
+        {
+            for (int i = 0; i < excl.Count; i++)
+                if (pathLower == excl[i] || pathLower.StartsWith(excl[i] + "\\", StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        // Обход через FindFirstFileEx по пути с префиксом \\?\: DirectoryInfo в режиме старых
+        // путей .NET (нет app.config) бросает PathTooLong за 260 знаков, и глубокие деревья во
+        // временных папках оставались нетронутыми с пометкой «недоступно». Исключения из
+        // настроек действуют на подпапки и файлы внутри цели, а не только на её корень.
+        // Точки повторного разбора (junction/symlink) не раскрываются и в dirsOut не попадают —
+        // RemoveDirectory снёс бы саму ссылку.
+        private void Walk(CleanTarget t, FileVisitor onFile, List<string> dirsOut, ref int errors)
+        {
+            string rootPath = NormalizeDir(t.Path);
+            if (rootPath == null) return;
+            uint ra = Native.AttributesOf(rootPath);
+            if (ra == Native.INVALID_FILE_ATTRIBUTES || (ra & Native.FILE_ATTRIBUTE_DIRECTORY) == 0
+                || (ra & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0) return;
+
+            string mask = string.IsNullOrEmpty(t.Mask) ? "*" : t.Mask;
+            long cutoff = t.MinAgeMinutes > 0
+                ? DateTime.Now.AddMinutes(-t.MinAgeMinutes).ToFileTime()
+                : long.MaxValue;
+            List<string> excl = ExcludeList();
+
+            Stack<string> stack = new Stack<string>();
+            Stack<int> depths = new Stack<int>();
+            stack.Push(rootPath); depths.Push(0);
+            while (stack.Count > 0)
+            {
+                if (_cancelDisk) return;
+                string dir = stack.Pop();
+                int depth = depths.Pop();
+                string prefix = dir.EndsWith("\\") ? dir : dir + "\\";
+                Native.WIN32_FIND_DATA fd;
+                IntPtr h = Native.FindFirstFileExW(LongPath(prefix + "*"), Native.FindExInfoBasic, out fd,
+                                                   Native.FindExSearchNameMatch, IntPtr.Zero, Native.FIND_FIRST_EX_LARGE_FETCH);
+                if (h == Native.INVALID_HANDLE_VALUE)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    // 18 ERROR_NO_MORE_FILES — пусто; 2/3 — папка исчезла между обходом и заходом
+                    if (err != 18 && err != 2 && err != 3) errors++;
+                    continue;
+                }
+                try
+                {
+                    do
+                    {
+                        if (_cancelDisk) return;
+                        string name = fd.cFileName;
+                        if (name == "." || name == "..") continue;
+                        string full = prefix + name;
+                        if ((fd.dwFileAttributes & Native.FILE_ATTRIBUTE_DIRECTORY) == 0)
+                        {
+                            if (t.MinAgeMinutes > 0 && FileTimeOf(fd.ftLastWriteTime) > cutoff) continue;
+                            if (mask != "*" && !MaskMatch(name, mask)) continue;
+                            if (excl.Count > 0 && IsExcluded(full.ToLowerInvariant(), excl)) continue;
+                            onFile(full, ((long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow, fd.dwFileAttributes);
+                        }
+                        else if (t.Recurse)
+                        {
+                            // junction/symlink: за ним может лежать что угодно, включая корень диска
+                            if ((fd.dwFileAttributes & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0) continue;
+                            // Имя вида ".. " (с хвостовым пробелом или точкой): Win32 без \\?\ нормализует
+                            // его в родителя и обход зацикливается; легальными такие каталоги не бывают.
+                            if (IsDotName(name)) continue;
+                            if (depth >= MaxWalkDepth) continue;
+                            if (excl.Count > 0 && IsExcluded(full.ToLowerInvariant(), excl)) continue;
+                            if (dirsOut != null) dirsOut.Add(full);
+                            stack.Push(full); depths.Push(depth + 1);
+                        }
+                    } while (Native.FindNextFileW(h, out fd));
+                }
+                finally { Native.FindClose(h); }
+            }
+        }
+
+        // Полный путь папки без хвостового «\» (корень диска остаётся «C:\»); null — путь негодный.
+        private static string NormalizeDir(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            string p;
+            try { p = Path.GetFullPath(path).TrimEnd('\\'); } catch { return null; }
+            if (p.Length < 2) return null;
+            return p.EndsWith(":") ? p + "\\" : p;
+        }
+
+        // Маска в стиле winapp2: "*.log", "thumbcache_*.db", "*".
+        private static bool MaskMatch(string name, string mask)
+        {
+            if (mask == "*" || mask == "*.*") return true;
+            int star = mask.IndexOf('*');
+            if (star < 0) return string.Equals(name, mask, StringComparison.OrdinalIgnoreCase);
+            string head = mask.Substring(0, star);
+            string tail = mask.Substring(star + 1);
+            if (tail.IndexOf('*') >= 0)
+            {
+                // несколько звёздочек — сводим к «содержит все куски по порядку»
+                string[] parts = mask.Split('*');
+                int pos = 0;
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    if (parts[i].Length == 0) continue;
+                    int at = name.IndexOf(parts[i], pos, StringComparison.OrdinalIgnoreCase);
+                    if (at < 0) return false;
+                    if (i == 0 && at != 0) return false;
+                    pos = at + parts[i].Length;
+                }
+                string last = parts[parts.Length - 1];
+                if (last.Length > 0 && !name.EndsWith(last, StringComparison.OrdinalIgnoreCase)) return false;
+                return true;
+            }
+            if (name.Length < head.Length + tail.Length) return false;
+            return name.StartsWith(head, StringComparison.OrdinalIgnoreCase)
+                && name.EndsWith(tail, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public void AnalyzeCategory(CleanCategory c)
+        {
+            if (c.Kind == "driverstore") { AnalyzeDriverStore(c); return; }
+            if (c.Kind == "winsxs") { AnalyzeComponentStore(c); return; }
+            int errors = 0;
+            foreach (CleanTarget t in c.Targets)
+            {
+                if (_cancelDisk) break;
+                t.Guarded = !IsAllowedTarget(t.Path);
+                if (t.Guarded) { t.Size = 0; t.FileCount = 0; t.Errors = 0; t.Analyzed = true; continue; }
+                long ts = 0; int tc = 0; int te = 0;
+                Walk(t, delegate(string path, long size, uint attrs) { ts += size; tc++; }, null, ref te);
+                t.Size = ts; t.FileCount = tc; t.Errors = te; t.Analyzed = true;
+                if (t.Enabled) errors += te;   // недоступность отключённой папки пользователя не касается
+            }
+            if (c.RecycleBin)
+            {
+                Native.SHQUERYRBINFO info = new Native.SHQUERYRBINFO();
+                info.cbSize = Marshal.SizeOf(typeof(Native.SHQUERYRBINFO));
+                c.BinSize = 0; c.BinCount = 0;
+                try { if (Native.SHQueryRecycleBin(null, ref info) == 0) { c.BinSize = info.i64Size; c.BinCount = (int)info.i64NumItems; } }
+                catch { }
+            }
+            RecalcCategory(c);
+            c.Analyzed = !_cancelDisk;
+            c.Note = errors > 0
+                ? Tr.S("часть папок недоступна (" + errors + ")", errors + " folder(s) not accessible")
+                : null;
+        }
+
+        // Анализ категорий параллельно: узкое место — задержки ФС, а не CPU,
+        // поэтому несколько потоков дают кратный выигрыш на холодном кэше.
+        public void AnalyzeCategories(List<CleanCategory> cats, Action<CleanCategory> onDone)
+        {
+            if (cats == null || cats.Count == 0) return;
+            int next = -1;
+            int workers = Math.Min(cats.Count, Math.Max(2, Environment.ProcessorCount));
+            if (workers > 8) workers = 8;
+            Thread[] pool = new Thread[workers];
+            object gate = new object();
+
+            for (int i = 0; i < workers; i++)
+            {
+                pool[i] = new Thread(delegate()
+                {
+                    while (true)
+                    {
+                        int idx = Interlocked.Increment(ref next);
+                        if (idx >= cats.Count || _cancelDisk) return;
+                        CleanCategory c = cats[idx];
+                        try { AnalyzeCategory(c); } catch { }
+                        if (onDone != null) { lock (gate) { try { onDone(c); } catch { } } }
+                    }
+                });
+                pool[i].IsBackground = true;
+                pool[i].Start();
+            }
+            foreach (Thread t in pool) t.Join();
+        }
+
+        // Предохранитель: не удаляем корни дисков, ключевые системные папки целиком,
+        // папки с данными пользователя и всё, что он сам внёс в исключения.
+        private static readonly string[] _neverTouch = new string[] {
+            "\\windows\\system32", "\\windows\\syswow64", "\\windows\\winsxs",
+            "\\windows\\system32\\drivers", "\\windows\\fonts",
+            "\\system volume information", "\\$recycle.bin",
+            "\\windows\\system32\\config", "\\windows\\assembly",
+            "\\windows\\servicing", "\\windows\\boot", "\\windows\\inf",
+            // DriverStore чистится только через pnputil, кэш MSI и бэкап WinSxS — никогда
+            "\\windows\\system32\\driverstore", "\\windows\\installer", "\\windows\\winsxs\\backup",
+            // журналы событий: правило winapp2 «*.evtx» иначе снесло бы историю системы
+            "\\windows\\system32\\winevt",
+        };
+
+        private bool IsAllowedTarget(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string p;
+            try { p = Path.GetFullPath(path).TrimEnd('\\'); } catch { return false; }
+            if (p.Length < 4) return false;
+
+            string root = (Path.GetPathRoot(p) ?? "").TrimEnd('\\');
+            if (string.Equals(p, root, StringComparison.OrdinalIgnoreCase)) return false;
+
+            string pl = p.ToLowerInvariant();
+            if (pl == _winDir.ToLowerInvariant()) return false;
+            if (!string.IsNullOrEmpty(_programFiles) && pl == _programFiles.ToLowerInvariant()) return false;
+            if (!string.IsNullOrEmpty(_programFilesX86) && pl == _programFilesX86.ToLowerInvariant()) return false;
+
+            foreach (string bad in _neverTouch)
+                if (pl == root.ToLowerInvariant() + bad || pl.EndsWith(bad)) return false;
+
+            // папки с данными, которые чистилка не должна затрагивать даже по ошибке в правиле
+            if (IsUserDataRoot(pl)) return false;
+            if (IsSavePath(pl)) return false;
+
+            // никогда не чистим собственный каталог данных (там конфиг, история, логи)
+            if (pl.StartsWith(_dir.ToLowerInvariant())) return false;
+
+            if (IsExcluded(pl, ExcludeList())) return false;
+            return true;
+        }
+
+        // Сохранения игр — не мусор ни по какому правилу, включая winapp2: путь с таким
+        // сегментом не становится целью вообще (не «не отмечен», а отсутствует в составе).
+        // «remote» в Steam\userdata — облачные сейвы, «wgs» — сейвы Xbox/Game Pass.
+        private static readonly string[] _saveSegments = new string[] {
+            "\\saved games\\", "\\save games\\", "\\my games\\", "\\saves\\", "\\savegames\\",
+            "\\savegame\\", "\\savedata\\", "\\wgs\\", "\\steam\\userdata\\",
+        };
+
+        private static bool IsSavePath(string pathLower)
+        {
+            string p = pathLower.TrimEnd('\\') + "\\";
+            foreach (string seg in _saveSegments)
+                if (p.IndexOf(seg, StringComparison.Ordinal) >= 0) return true;
+            return false;
+        }
+
+        private bool IsUserDataRoot(string pathLower)
+        {
+            Environment.SpecialFolder[] guarded = new Environment.SpecialFolder[] {
+                Environment.SpecialFolder.UserProfile, Environment.SpecialFolder.MyDocuments,
+                Environment.SpecialFolder.MyPictures, Environment.SpecialFolder.MyMusic,
+                Environment.SpecialFolder.MyVideos, Environment.SpecialFolder.Desktop,
+                Environment.SpecialFolder.ApplicationData, Environment.SpecialFolder.LocalApplicationData,
+                Environment.SpecialFolder.CommonApplicationData, Environment.SpecialFolder.ProgramFiles,
+                Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.Windows,
+                Environment.SpecialFolder.System,
+            };
+            foreach (Environment.SpecialFolder sf in guarded)
+            {
+                string f;
+                try { f = Environment.GetFolderPath(sf); } catch { continue; }
+                if (string.IsNullOrEmpty(f)) continue;
+                if (pathLower == f.TrimEnd('\\').ToLowerInvariant()) return true;
+            }
+            return false;
+        }
+
+        // Удаление одной цели потоково: файл удаляется сразу, как только найден.
+        // Всё через Win32 по пути \\?\ — File.Delete/Directory.Delete за MAX_PATH не работают.
+        private long DeleteTarget(CleanTarget t, CleanResult res)
+        {
+            long freed = 0;
+            string rootPath = NormalizeDir(t.Path);
+            if (rootPath == null) return 0;
+            uint ra = Native.AttributesOf(rootPath);
+            if (ra == Native.INVALID_FILE_ATTRIBUTES || (ra & Native.FILE_ATTRIBUTE_DIRECTORY) == 0) return 0;
+            // цель сама junction/symlink: за ней чужая папка — не трогаем ни содержимое, ни ссылку
+            if ((ra & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0) return 0;
+
+            List<string> dirs = new List<string>();
+            int errors = 0;
+            int deleted = 0;
+            Walk(t, delegate(string path, long size, uint attrs)
+            {
+                string lp = LongPath(path);
+                if ((attrs & (Native.FILE_ATTRIBUTE_READONLY | Native.FILE_ATTRIBUTE_HIDDEN | Native.FILE_ATTRIBUTE_SYSTEM)) != 0)
+                    Native.SetFileAttributesW(lp, Native.FILE_ATTRIBUTE_NORMAL);
+                if (Native.DeleteFileW(lp)) { freed += size; deleted++; }
+                else errors++;   // занят другим процессом или нет прав — это норма
+            }, dirs, ref errors);
+
+            // подпапки — от самых глубоких к верхним; только пустые уйдут (reparse-точек в списке нет)
+            if (string.IsNullOrEmpty(t.Mask))
+            {
+                dirs.Sort(delegate(string a, string b) { return b.Length.CompareTo(a.Length); });
+                foreach (string d in dirs) Native.RemoveDirectoryW(LongPath(d));
+                if (!t.ContentsOnly) Native.RemoveDirectoryW(LongPath(rootPath));
+            }
+
+            res.Errors += errors;
+            res.FilesDeleted += deleted;
+            return freed;
+        }
+
+        public CleanResult CleanCategories(List<CleanCategory> cats)
+        {
+            CleanResult res = new CleanResult();
+            if (cats == null) return res;
+
+            foreach (CleanCategory c in cats)
+            {
+                if (_cancelDisk) break;
+                long catFreed = 0;
+                if (!string.IsNullOrEmpty(c.Kind))
+                {
+                    catFreed = c.Kind == "driverstore" ? DeleteDriverPackages(c, res) : CleanComponentStore(c, res);
+                    res.Freed += catFreed;
+                    res.Log.Add("--- " + c.Title + ": " + FormatBytes(catFreed));
+                    continue;
+                }
+                foreach (CleanTarget t in c.Targets)
+                {
+                    if (_cancelDisk) break;
+                    if (!t.Enabled)
+                    {
+                        res.Log.Add("SKIP (off)   " + t.Path + (string.IsNullOrEmpty(t.Mask) ? "" : "  [" + t.Mask + "]"));
+                        continue;
+                    }
+                    if (!IsAllowedTarget(t.Path))
+                    {
+                        res.Log.Add("SKIP (guard) " + t.Path);
+                        continue;
+                    }
+                    long f = DeleteTarget(t, res);
+                    catFreed += f;
+                    res.Log.Add(FormatBytes(f).PadLeft(10) + "  " + t.Path
+                                + (string.IsNullOrEmpty(t.Mask) ? "" : "  [" + t.Mask + "]"));
+                }
+                if (c.RecycleBin && !c.BinEnabled)
+                    res.Log.Add("SKIP (off)   " + Tr.S("Корзина", "Recycle Bin"));
+                if (c.RecycleBin && c.BinEnabled && !_cancelDisk)
+                {
+                    long binSize = 0;
+                    Native.SHQUERYRBINFO info = new Native.SHQUERYRBINFO();
+                    info.cbSize = Marshal.SizeOf(typeof(Native.SHQUERYRBINFO));
+                    try { if (Native.SHQueryRecycleBin(null, ref info) == 0) binSize = info.i64Size; }
+                    catch { }
+                    try
+                    {
+                        Native.SHEmptyRecycleBin(IntPtr.Zero, null,
+                            Native.SHERB_NOCONFIRMATION | Native.SHERB_NOPROGRESSUI | Native.SHERB_NOSOUND);
+                        catFreed += binSize;
+                        res.Log.Add(FormatBytes(binSize).PadLeft(10) + "  " + Tr.S("Корзина", "Recycle Bin"));
+                    }
+                    catch { }
+                }
+                res.Freed += catFreed;
+                res.Log.Add("--- " + c.Title + ": " + FormatBytes(catFreed));
+            }
+
+            if (Config.CleanLogEnabled) WriteCleanLog(res);
+            return res;
+        }
+
+        // Лог очистки — как в FluentCleaner: видно, что именно и сколько было удалено.
+        private void WriteCleanLog(CleanResult res)
+        {
+            try
+            {
+                string path = Path.Combine(_dir, "clean-" + DateTime.Now.ToString("yyyy-MM") + ".log");
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("=== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===");
+                foreach (string line in res.Log) sb.AppendLine(line);
+                sb.AppendLine("TOTAL " + FormatBytes(res.Freed) + "  files=" + res.FilesDeleted
+                              + "  skipped=" + res.Errors);
+                sb.AppendLine();
+                File.AppendAllText(path, sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        public string CleanLogPath
+        {
+            get { return Path.Combine(_dir, "clean-" + DateTime.Now.ToString("yyyy-MM") + ".log"); }
+        }
+    }
+}
