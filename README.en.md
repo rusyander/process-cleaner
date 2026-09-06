@@ -260,8 +260,11 @@ duplicates live on the neighbouring "Disk" tab. Categories:
   Update cache, crash dumps, error reports, Delivery Optimization. `Prefetch` is deliberately
   left alone: it is the program-launch cache, weighs megabytes, and everything starts slower
   after it is deleted until Windows rebuilds it.
-- **Windows caches** — thumbcache/iconcache, DirectX and GPU caches (NVIDIA/AMD/Intel), font
-  cache, notification images, RDP cache — Windows rebuilds them itself.
+- **Windows caches** — thumbcache/iconcache, font cache, notification images, RDP cache —
+  Windows rebuilds them itself.
+- **GPU shader caches** — DirectX (`D3DSCache`), NVIDIA/AMD/Intel and Steam `shadercache`.
+  After cleaning, games and Chrome/Electron recompile their shaders and stutter for the first
+  minutes, while the space gained is small — unchecked by default.
 - **Microsoft Store app caches** — `INetCache` / `Temp` / `TempState` of every UWP package and
   the WebView cache of the new Teams. `LocalState` and app settings are untouched.
 - **Browser caches** — Chrome / Edge / Brave / Yandex / Opera / Vivaldi / Firefox, cache only
@@ -272,7 +275,8 @@ duplicates live on the neighbouring "Disk" tab. Categories:
   NGX Updater downloads new versions into `ProgramData\NVIDIA\NGX\models\<model>\versions`
   and never removes old ones — gigabytes pile up within a year. Plus the NVIDIA App/Overlay
   cache, the driver downloader, `C:\NVIDIA`. The newest version of each model and the driver
-  itself stay.
+  itself stay. The NVIDIA App game-detection database (`NvBackend\ApplicationOntology`) is
+  never touched: without it NVIDIA App stops recognising games until it re-downloads the DB.
 - **Old logs** — CBS/DISM/Windows setup logs, Update Orchestrator, npm/yarn/gradle,
   Docker Desktop, OneDrive, Zoom, Chocolatey.
 - **Recent file lists** — Recent documents, jump lists (privacy).

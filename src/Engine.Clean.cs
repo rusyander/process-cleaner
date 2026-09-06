@@ -256,10 +256,10 @@ namespace WindowsProcessCleaner
 
             // Кэши отрисовки/эскизов Windows — восстанавливаются автоматически
             CleanCategory shell = new CleanCategory();
-            shell.Id = "shell"; shell.Title = Tr.S("Кэши Windows (эскизы, иконки, шейдеры)", "Windows caches (thumbnails, icons, shaders)");
+            shell.Id = "shell"; shell.Title = Tr.S("Кэши Windows (эскизы, иконки, шрифты)", "Windows caches (thumbnails, icons, fonts)");
             shell.Recommended = true;
-            shell.Desc = Tr.S("thumbcache/iconcache, DirectX- и GPU-кэши, кэш шрифтов, картинки уведомлений, кэш RDP — Windows пересоберёт сама",
-                              "thumbcache/iconcache, DirectX and GPU caches, font cache, notification images, RDP cache — Windows rebuilds them");
+            shell.Desc = Tr.S("thumbcache/iconcache, кэш шрифтов, картинки уведомлений, кэш RDP — Windows пересоберёт сама",
+                              "thumbcache/iconcache, font cache, notification images, RDP cache — Windows rebuilds them");
             string explorerDir = Path.Combine(lad, "Microsoft\\Windows\\Explorer");
             AddDir(shell, explorerDir, true, "thumbcache_*.db", 0);
             AddDir(shell, explorerDir, true, "iconcache_*.db", 0);
@@ -268,20 +268,32 @@ namespace WindowsProcessCleaner
             AddDir(shell, Path.Combine(lad, "Microsoft\\Windows\\INetCache"), true);
             AddDir(shell, Path.Combine(lad, "Microsoft\\Windows\\Notifications\\wpnidm"), true);
             AddDir(shell, Path.Combine(lad, "Microsoft\\Terminal Server Client\\Cache"), true);
-            AddDir(shell, Path.Combine(lad, "D3DSCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\DXCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\GLCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\ComputeCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\OptixCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\PerDriverVersion\\DXCache"), true);
-            AddDir(shell, Path.Combine(lad, "NVIDIA\\PerDriverVersion\\GLCache"), true);
-            AddDir(shell, Path.Combine(lad, "AMD\\DxCache"), true);
-            AddDir(shell, Path.Combine(lad, "AMD\\DxcCache"), true);
-            AddDir(shell, Path.Combine(lad, "AMD\\GLCache"), true);
-            AddDir(shell, Path.Combine(lad, "AMD\\VkCache"), true);
-            AddDir(shell, Path.Combine(lad, "Intel\\ShaderCache"), true);
             AddDir(shell, Path.Combine(_winDir, "ServiceProfiles\\LocalService\\AppData\\Local\\FontCache"), true);
             if (shell.Targets.Count > 0) list.Add(shell);
+
+            // Кэши шейдеров GPU — не «мусор»: после удаления игры, Chrome и Electron-приложения
+            // компилируют шейдеры заново, и первые минуты идут с подтормаживаниями, а места
+            // освобождается мало. Поэтому отдельная категория и по умолчанию не отмечена (06.09.2026).
+            string steam = SteamPath();
+            CleanCategory shaders = new CleanCategory();
+            shaders.Id = "shaders"; shaders.Title = Tr.S("Кэши шейдеров GPU", "GPU shader caches");
+            shaders.Recommended = false;
+            shaders.Desc = Tr.S("DirectX (D3DSCache), NVIDIA, AMD, Intel и shadercache Steam — после очистки игры и Chrome/Electron компилируют шейдеры заново (подтормаживания в первые минуты), места даёт мало",
+                                "DirectX (D3DSCache), NVIDIA, AMD, Intel and Steam shadercache — after cleaning, games and Chrome/Electron recompile shaders (stutter for the first minutes), frees little");
+            AddDir(shaders, Path.Combine(lad, "D3DSCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\DXCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\GLCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\ComputeCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\OptixCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\PerDriverVersion\\DXCache"), true);
+            AddDir(shaders, Path.Combine(lad, "NVIDIA\\PerDriverVersion\\GLCache"), true);
+            AddDir(shaders, Path.Combine(lad, "AMD\\DxCache"), true);
+            AddDir(shaders, Path.Combine(lad, "AMD\\DxcCache"), true);
+            AddDir(shaders, Path.Combine(lad, "AMD\\GLCache"), true);
+            AddDir(shaders, Path.Combine(lad, "AMD\\VkCache"), true);
+            AddDir(shaders, Path.Combine(lad, "Intel\\ShaderCache"), true);
+            if (steam != null) AddDir(shaders, Path.Combine(steam, "steamapps\\shadercache"), true);
+            if (shaders.Targets.Count > 0) list.Add(shaders);
 
             // Кэши приложений из Microsoft Store (UWP): у каждого пакета свои INetCache/Temp/TempState
             CleanCategory store = new CleanCategory();
@@ -352,7 +364,7 @@ namespace WindowsProcessCleaner
             AddDir(apps, Path.Combine(lad, "Ubisoft Game Launcher\\cache"), true);
             AddDir(apps, Path.Combine(lad, "GOG.com\\Galaxy\\webcache"), true);
             AddJetBrains(apps, Path.Combine(lad, "JetBrains"));
-            AddSteamShaderCache(apps, sysDrive);
+            AddSteamCaches(apps, steam);
             if (apps.Targets.Count > 0) list.Add(apps);
 
             // NVIDIA: то, что копится от обновлений драйвера и NVIDIA App
@@ -368,8 +380,10 @@ namespace WindowsProcessCleaner
             AddDir(nv, Path.Combine(lad, "NVIDIA Corporation\\NVIDIA App\\CefCache"), true);
             AddDir(nv, Path.Combine(lad, "NVIDIA Corporation\\NVIDIA Overlay\\CefCache"), true);
             AddDir(nv, Path.Combine(lad, "NVIDIA Corporation\\GeForce Experience\\CefCache"), true);
-            AddDir(nv, Path.Combine(lad, "NVIDIA Corporation\\NVIDIA App\\NvBackend\\ApplicationOntology"), true);
-            AddDir(nv, Path.Combine(lad, "NVIDIA\\NvBackend\\ApplicationOntology"), true);
+            // NvBackend\ApplicationOntology намеренно НЕ трогаем: это не кэш, а база распознавания
+            // игр NVIDIA App (ontology.json + детекторы). После её удаления 06.09.2026 бэкенд писал
+            // «LoadApplicationDetectors failed» на каждый новый процесс, пока не скачал базу заново;
+            // путь дополнительно закрыт в IsAllowedTarget.
             AddDir(nv, Path.Combine(lad, "NVIDIA Corporation\\NV_Cache"), true);
             AddDir(nv, Path.Combine(pd, "NVIDIA Corporation\\NVIDIA App\\Logs"), true);
             AddDir(nv, Path.Combine(pd, "NVIDIA Corporation\\NVIDIA Broadcast\\temp"), true, null, fresh);
@@ -673,18 +687,25 @@ namespace WindowsProcessCleaner
         // ================= DRIVERSTORE =================
 
         // Steam ставится куда угодно — берём путь из реестра, а не угадываем диск.
-        private void AddSteamShaderCache(CleanCategory c, string sysDrive)
+        // Папка Steam из реестра (HKCU\Software\Valve\Steam\SteamPath) или null
+        private static string SteamPath()
         {
-            string steam = null;
             try
             {
                 using (RegistryKey k = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
-                    if (k != null) steam = k.GetValue("SteamPath") as string;
+                {
+                    if (k == null) return null;
+                    string s = k.GetValue("SteamPath") as string;
+                    return string.IsNullOrEmpty(s) ? null : s.Replace('/', '\\');
+                }
             }
-            catch { }
+            catch { return null; }
+        }
+
+        // Кэши Steam без шейдеров: shadercache живёт в категории «Кэши шейдеров GPU»
+        private void AddSteamCaches(CleanCategory c, string steam)
+        {
             if (string.IsNullOrEmpty(steam)) return;
-            steam = steam.Replace('/', '\\');
-            AddDir(c, Path.Combine(steam, "steamapps\\shadercache"), true);
             AddDir(c, Path.Combine(steam, "appcache\\httpcache"), true);
             AddDir(c, Path.Combine(steam, "logs"), true);
         }

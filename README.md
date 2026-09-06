@@ -265,8 +265,11 @@ pnpm / yarn·bun / Docker Compose / Go·Cargo·Deno. Плюс список пр�
   Windows Update, crash dumps, отчёты об ошибках, Delivery Optimization. `Prefetch` намеренно
   не трогается: это кэш запуска программ, весит мегабайты, а после удаления всё стартует
   медленнее, пока Windows не соберёт его заново.
-- **Кэши Windows** — thumbcache/iconcache, DirectX- и GPU-кэши (NVIDIA/AMD/Intel), кэш
-  шрифтов, картинки уведомлений, кэш RDP — Windows пересобирает их сама.
+- **Кэши Windows** — thumbcache/iconcache, кэш шрифтов, картинки уведомлений, кэш RDP —
+  Windows пересобирает их сама.
+- **Кэши шейдеров GPU** — DirectX (`D3DSCache`), NVIDIA/AMD/Intel и `shadercache` Steam.
+  После очистки игры и Chrome/Electron компилируют шейдеры заново и первые минуты
+  подтормаживают, а места это даёт мало — не отмечены по умолчанию.
 - **Кэши приложений Microsoft Store** — `INetCache` / `Temp` / `TempState` каждого UWP-пакета
   и WebView-кэш нового Teams. `LocalState` и настройки приложений не трогаются.
 - **Кэши браузеров** — Chrome / Edge / Brave / Yandex / Opera / Vivaldi / Firefox, только кэш
@@ -277,6 +280,8 @@ pnpm / yarn·bun / Docker Compose / Go·Cargo·Deno. Плюс список пр�
   NGX Updater докачивает новые версии в `ProgramData\NVIDIA\NGX\models\<модель>\versions`
   и никогда не удаляет старые — за год набегают гигабайты. Плюс кэш NVIDIA App/Overlay,
   загрузчик драйверов, `C:\NVIDIA`. Самая новая версия каждой модели и сам драйвер остаются.
+  База распознавания игр NVIDIA App (`NvBackend\ApplicationOntology`) не трогается: без неё
+  NVIDIA App перестаёт узнавать игры, пока не скачает базу заново.
 - **Старые логи** — логи CBS/DISM/установки Windows, Update Orchestrator, npm/yarn/gradle,
   Docker Desktop, OneDrive, Zoom, Chocolatey.
 - **Списки недавних файлов** — «Недавние документы», списки переходов (приватность).

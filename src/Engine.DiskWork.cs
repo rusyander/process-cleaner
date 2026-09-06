@@ -305,7 +305,8 @@ namespace WindowsProcessCleaner
 
             // папки с данными, которые чистилка не должна затрагивать даже по ошибке в правиле
             if (IsUserDataRoot(pl)) return false;
-            if (IsSavePath(pl)) return false;
+            if (HasSegment(pl, _saveSegments)) return false;
+            if (HasSegment(pl, _appDataSegments)) return false;
 
             // никогда не чистим собственный каталог данных (там конфиг, история, логи)
             if (pl.StartsWith(_dir.ToLowerInvariant())) return false;
@@ -323,10 +324,19 @@ namespace WindowsProcessCleaner
             "\\savegame\\", "\\savedata\\", "\\wgs\\", "\\steam\\userdata\\",
         };
 
-        private static bool IsSavePath(string pathLower)
+        // Служебные базы приложений, которые правило очистки может принять за кэш. Путь с таким
+        // сегментом не становится целью ни по какому правилу, включая winapp2.
+        // NvBackend\ApplicationOntology — база распознавания игр NVIDIA App: после её удаления
+        // 06.09.2026 бэкенд писал «LoadApplicationDetectors failed» на каждый новый процесс,
+        // а заново не скачивал (кэш ETag отвечал 304).
+        private static readonly string[] _appDataSegments = new string[] {
+            "\\nvbackend\\applicationontology\\",
+        };
+
+        private static bool HasSegment(string pathLower, string[] segments)
         {
             string p = pathLower.TrimEnd('\\') + "\\";
-            foreach (string seg in _saveSegments)
+            foreach (string seg in segments)
                 if (p.IndexOf(seg, StringComparison.Ordinal) >= 0) return true;
             return false;
         }
