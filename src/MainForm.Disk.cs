@@ -672,8 +672,13 @@ namespace WindowsProcessCleaner
                 MsgInfo(Tr.S("Папки уже не пусты — ничего не удалено.", "The folders are no longer empty — nothing deleted."), title);
                 return;
             }
-            string q = Tr.S("Переместить в Корзину ", "Move to the Recycle Bin: ") + ok.Count
+            // На сетевом или съёмном томе Корзины нет: оболочка удалит безвозвратно — говорим это прямо в вопросе
+            bool bin = Engine.RecycleBinAvailable(_diskScan.Root);
+            string q = (bin ? Tr.S("Переместить в Корзину ", "Move to the Recycle Bin: ")
+                            : Tr.S("УДАЛИТЬ БЕЗВОЗВРАТНО ", "DELETE PERMANENTLY: ")) + ok.Count
                      + Tr.S(" элемент(ов)", " item(s)") + (size > 0 ? " (" + Engine.FormatBytes(size) + ")" : "") + "?"
+                     + (bin ? "" : Tr.S("\r\n\r\n⚠ На этом томе (сетевой диск или съёмный носитель) Windows не ведёт Корзину: восстановить файлы будет нельзя.",
+                                        "\r\n\r\n⚠ This volume (network drive or removable media) has no Recycle Bin: the files cannot be restored."))
                      + (skipped.Count > 0 ? Tr.S("\r\n\r\nПропущено (уже не пусты): ", "\r\n\r\nSkipped (no longer empty): ") + skipped.Count : "");
             if (!MsgAsk(q, title)) return;
             // На время переноса страница занята: второй клик по «В Корзину» или пересканирование

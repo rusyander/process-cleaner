@@ -250,8 +250,9 @@ namespace WindowsProcessCleaner
             // его заново. Освободить нечего, потерять есть что.
             AddDir(sys, Path.Combine(_winDir, "Panther"), true);
             AddDir(sys, Path.Combine(_winDir, "Installer\\$PatchCache$"), true);
+            // MEMORY.DMP (полный дамп ядра, гигабайты) попадает под ту же маску — отдельная цель
+            // считала бы его дважды
             AddDir(sys, _winDir, true, "*.dmp", 0);
-            AddDir(sys, _winDir, true, "MEMORY.DMP", 0);
             list.Add(sys);
 
             // Кэши отрисовки/эскизов Windows — восстанавливаются автоматически

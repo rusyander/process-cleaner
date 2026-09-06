@@ -33,6 +33,20 @@ namespace WindowsProcessCleaner
         public void ResetDiskCancel() { _cancelDisk = false; }
         public bool DiskCancelled { get { return _cancelDisk; } }
 
+        // Сколько обходов/удалений идёт прямо сейчас. Флаг отмены один на движок: проверка состояния
+        // на «Главной» и «Ускорить» тоже считают системный мусор и раньше сбрасывали его безусловно —
+        // нажатый в этот момент «Стоп» на вкладке очистки молча отменялся, и удаление продолжалось.
+        private int _diskWorkers;
+
+        // Снять отмену, только если никакой дисковой работы сейчас нет. false — работа идёт,
+        // флаг оставлен как есть (вызывающий получит «прервано» вместо чужой отмены).
+        public bool TryResetDiskCancel()
+        {
+            if (Interlocked.CompareExchange(ref _diskWorkers, 0, 0) != 0) return false;
+            _cancelDisk = false;
+            return true;
+        }
+
         // Обход каталога БЕЗ сбора всех путей в память и БЕЗ рекурсии.
         // Старая версия складывала в List<string> путь каждого файла (для %TEMP% или
         // .nuget\packages это сотни тысяч строк и сотни МБ), а потом делала на каждый
@@ -213,13 +227,20 @@ namespace WindowsProcessCleaner
 
         public void AnalyzeCategory(CleanCategory c)
         {
+            Interlocked.Increment(ref _diskWorkers);
+            try { AnalyzeCategoryCore(c); }
+            finally { Interlocked.Decrement(ref _diskWorkers); }
+        }
+
+        private void AnalyzeCategoryCore(CleanCategory c)
+        {
             if (c.Kind == "driverstore") { AnalyzeDriverStore(c); return; }
             if (c.Kind == "winsxs") { AnalyzeComponentStore(c); return; }
             int errors = 0;
             foreach (CleanTarget t in c.Targets)
             {
                 if (_cancelDisk) break;
-                t.Guarded = !IsAllowedTarget(t.Path);
+                t.Guarded = !IsAllowedTarget(t);
                 if (t.Guarded) { t.Size = 0; t.FileCount = 0; t.Errors = 0; t.Analyzed = true; continue; }
                 long ts = 0; int tc = 0; int te = 0;
                 Walk(t, delegate(string path, long size, uint attrs) { ts += size; tc++; }, null, ref te);
@@ -285,7 +306,40 @@ namespace WindowsProcessCleaner
             "\\windows\\system32\\winevt",
         };
 
-        private bool IsAllowedTarget(string path)
+        // Цель с маской и без рекурсии удаляет только файлы по маске прямо в папке, саму папку и
+        // подпапки не трогает. Для неё корни %WinDir%, AppData и ProgramData допустимы: иначе
+        // MEMORY.DMP и *.dmp в C:\Windows, IconCache.db в %LOCALAPPDATA% и правила winapp2 вида
+        // «%WinDir%|*.log» вечно стояли под предохранителем и никогда не чистились (06.09.2026).
+        // Корни дисков, System32 и прочие _neverTouch, папки сохранений и профиль пользователя
+        // (Документы, Рабочий стол…) закрыты по-прежнему, с маской или без.
+        private bool IsAllowedTarget(CleanTarget t)
+        {
+            if (t == null) return false;
+            bool shallowMask = !string.IsNullOrEmpty(t.Mask) && !t.Recurse && t.Mask != "*" && t.Mask != "*.*";
+            return IsAllowedTarget(t.Path, shallowMask);
+        }
+
+        private bool IsAllowedTarget(string path) { return IsAllowedTarget(path, false); }
+
+        private bool IsMaskableRoot(string pathLower)
+        {
+            string[] roots;
+            try
+            {
+                roots = new string[] {
+                    _winDir,
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                };
+            }
+            catch { return false; }
+            foreach (string r in roots)
+                if (!string.IsNullOrEmpty(r) && pathLower == r.TrimEnd('\\').ToLowerInvariant()) return true;
+            return false;
+        }
+
+        private bool IsAllowedTarget(string path, bool shallowMask)
         {
             if (string.IsNullOrEmpty(path)) return false;
             string p;
@@ -296,15 +350,19 @@ namespace WindowsProcessCleaner
             if (string.Equals(p, root, StringComparison.OrdinalIgnoreCase)) return false;
 
             string pl = p.ToLowerInvariant();
-            if (pl == _winDir.ToLowerInvariant()) return false;
-            if (!string.IsNullOrEmpty(_programFiles) && pl == _programFiles.ToLowerInvariant()) return false;
-            if (!string.IsNullOrEmpty(_programFilesX86) && pl == _programFilesX86.ToLowerInvariant()) return false;
+            bool rootOk = shallowMask && IsMaskableRoot(pl);
+            if (!rootOk)
+            {
+                if (pl == _winDir.ToLowerInvariant()) return false;
+                if (!string.IsNullOrEmpty(_programFiles) && pl == _programFiles.ToLowerInvariant()) return false;
+                if (!string.IsNullOrEmpty(_programFilesX86) && pl == _programFilesX86.ToLowerInvariant()) return false;
+            }
 
             foreach (string bad in _neverTouch)
                 if (pl == root.ToLowerInvariant() + bad || pl.EndsWith(bad)) return false;
 
             // папки с данными, которые чистилка не должна затрагивать даже по ошибке в правиле
-            if (IsUserDataRoot(pl)) return false;
+            if (!rootOk && IsUserDataRoot(pl)) return false;
             if (HasSegment(pl, _saveSegments)) return false;
             if (HasSegment(pl, _appDataSegments)) return false;
 
@@ -402,6 +460,13 @@ namespace WindowsProcessCleaner
 
         public CleanResult CleanCategories(List<CleanCategory> cats)
         {
+            Interlocked.Increment(ref _diskWorkers);
+            try { return CleanCategoriesCore(cats); }
+            finally { Interlocked.Decrement(ref _diskWorkers); }
+        }
+
+        private CleanResult CleanCategoriesCore(List<CleanCategory> cats)
+        {
             CleanResult res = new CleanResult();
             if (cats == null) return res;
 
@@ -424,7 +489,7 @@ namespace WindowsProcessCleaner
                         res.Log.Add("SKIP (off)   " + t.Path + (string.IsNullOrEmpty(t.Mask) ? "" : "  [" + t.Mask + "]"));
                         continue;
                     }
-                    if (!IsAllowedTarget(t.Path))
+                    if (!IsAllowedTarget(t))
                     {
                         res.Log.Add("SKIP (guard) " + t.Path);
                         continue;

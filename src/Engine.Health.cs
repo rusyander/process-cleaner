@@ -244,7 +244,8 @@ namespace WindowsProcessCleaner
             try
             {
                 foreach (CleanCategory c in BuildCleanCategories()) if (c.Id == "sys") { sys = c; break; }
-                if (sys != null) { ResetDiskCancel(); AnalyzeCategory(sys); }
+                // флаг отмены общий с вкладкой очистки: снимаем его, только если она сейчас ничего не делает
+                if (sys != null) { TryResetDiskCancel(); AnalyzeCategory(sys); }
             }
             catch { sys = null; }
             if (sys == null)
@@ -283,24 +284,29 @@ namespace WindowsProcessCleaner
             string dir = DownloadsFolder();
             long size = 0; int files = 0; bool partial = false;
             DateTime deadline = DateTime.UtcNow.AddSeconds(6);
-            Stack<string> stack = new Stack<string>();
-            if (Directory.Exists(dir)) stack.Push(dir);
-            int depth = 0;
+            // глубина идёт вместе с путём: раньше счётчик сбрасывался на каждой итерации и лимит не работал
+            Stack<KeyValuePair<string, int>> stack = new Stack<KeyValuePair<string, int>>();
+            if (Directory.Exists(dir)) stack.Push(new KeyValuePair<string, int>(dir, 0));
             while (stack.Count > 0)
             {
                 if (DateTime.UtcNow > deadline || cancel()) { partial = true; break; }
-                string d = stack.Pop();
+                KeyValuePair<string, int> cur = stack.Pop();
+                string d = cur.Key;
+                int depth = cur.Value;
                 try
                 {
                     foreach (FileSystemInfo fi in new DirectoryInfo(d).EnumerateFileSystemInfos())
                     {
                         if ((fi.Attributes & FileAttributes.ReparsePoint) != 0) continue;
-                        if ((fi.Attributes & FileAttributes.Directory) != 0) { if (depth < 24) stack.Push(fi.FullName); }
+                        if ((fi.Attributes & FileAttributes.Directory) != 0)
+                        {
+                            if (depth < 24) stack.Push(new KeyValuePair<string, int>(fi.FullName, depth + 1));
+                            else partial = true;
+                        }
                         else { size += ((FileInfo)fi).Length; files++; }
                     }
                 }
                 catch { }
-                depth = 0;
             }
             int level = size > 20L << 30 ? HealthLevel.Warn : size > 5L << 30 ? HealthLevel.Info : HealthLevel.Ok;
             string detail = Tr.S("папка «Загрузки»: ", "the Downloads folder: ") + FormatBytes(size) + ", " + Tr.N(files, "файл", "файла", "файлов", "file", "files")

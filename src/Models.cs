@@ -247,6 +247,7 @@ namespace WindowsProcessCleaner
         public string Provider;
         public string ClassName;
         public string Version;           // 32.0.15.8123
+        public bool VersionKnown = true; // false — строку «дата версия» разобрать не удалось: сравнивать нечем, пакет не трогаем
         public DateTime Date;
         public string RepoDir;           // папка в DriverStore\FileRepository, если сопоставилась
         public long Size;

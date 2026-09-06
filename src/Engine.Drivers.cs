@@ -33,7 +33,12 @@ namespace WindowsProcessCleaner
         // ни к одному присутствующему устройству. Удаление — pnputil /delete-driver БЕЗ
         // /force: если система считает пакет нужным, pnputil откажет сам.
         private static readonly Regex _rxOemInf = new Regex(@"^oem\d+\.inf$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex _rxDrvVersion = new Regex(@"^(\d{1,2}/\d{1,2}/\d{4})\s+(\d+(?:\.\d+)+)$", RegexOptions.Compiled);
+        // Дата у pnputil — «MM/dd/yyyy», но на всякий случай принимаем и «dd.MM.yyyy» / «yyyy-MM-dd»:
+        // нераспознанная строка раньше давала всем пакетам версию «0», и «самой новой» становилась
+        // случайная — под удаление мог попасть свежий пакет вместо старого.
+        private static readonly Regex _rxDrvVersion = new Regex(@"^(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})\s+(\d+(?:\.\d+)+)$", RegexOptions.Compiled);
+        private static readonly string[] _drvDateFormats = new string[] {
+            "MM/dd/yyyy", "M/d/yyyy", "dd.MM.yyyy", "d.M.yyyy", "dd/MM/yyyy", "yyyy-MM-dd", "yyyy-M-d", "dd-MM-yyyy", "d-M-yyyy" };
         private static readonly Regex _rxGuid = new Regex(@"^\{[0-9a-fA-F-]{36}\}$", RegexOptions.Compiled);
 
         private static Encoding OemEncoding()
@@ -85,14 +90,14 @@ namespace WindowsProcessCleaner
                     {
                         d.Version = m.Groups[2].Value;
                         DateTime dt;
-                        if (DateTime.TryParseExact(m.Groups[1].Value, new string[] { "MM/dd/yyyy", "M/d/yyyy" },
+                        if (DateTime.TryParseExact(m.Groups[1].Value, _drvDateFormats,
                                                    CultureInfo.InvariantCulture, DateTimeStyles.None, out dt)) d.Date = dt;
                     }
                 }
                 if (d.Published == null || d.Original == null) continue;
                 if (iOrig + 1 < b.Count && !_rxGuid.IsMatch(b[iOrig + 1])) d.Provider = b[iOrig + 1];
                 if (iOrig + 2 < b.Count && !_rxGuid.IsMatch(b[iOrig + 2])) d.ClassName = b[iOrig + 2];
-                if (d.Version == null) d.Version = "0";
+                if (d.Version == null) { d.Version = "?"; d.VersionKnown = false; }
                 all.Add(d);
             }
             return all;
@@ -193,6 +198,10 @@ namespace WindowsProcessCleaner
             foreach (List<DriverPackage> g in groups.Values)
             {
                 if (g.Count < 2) continue;
+                // хоть у одного пакета версия не разобрана — порядок «новее/старее» неизвестен, группу пропускаем
+                bool allKnown = true;
+                foreach (DriverPackage d in g) if (!d.VersionKnown) { allKnown = false; break; }
+                if (!allKnown) continue;
                 g.Sort(CompareDriverNewestFirst);
                 for (int i = 1; i < g.Count; i++)
                 {

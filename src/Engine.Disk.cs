@@ -378,6 +378,21 @@ namespace WindowsProcessCleaner
             return sb.ToString();
         }
 
+        // Есть ли у тома, где лежит путь, Корзина. На сетевых дисках и съёмных носителях
+        // (флешки, карты памяти) Windows Корзину не ведёт: SHFileOperation с FOF_ALLOWUNDO
+        // там удаляет безвозвратно и без вопросов — пользователь должен об этом узнать ДО «Да».
+        // Неопределимо (нет буквы диска, ошибка) — считаем, что Корзины нет: предупредить лишний раз безопаснее.
+        public static bool RecycleBinAvailable(string path)
+        {
+            try
+            {
+                string root = Path.GetPathRoot(Path.GetFullPath(path));
+                if (string.IsNullOrEmpty(root) || root.StartsWith(@"\\")) return false;
+                return new DriveInfo(root).DriveType == DriveType.Fixed;
+            }
+            catch { return false; }
+        }
+
         // Удаление в Корзину списком (одна операция оболочки на всё). Возвращает число
         // путей, которых после операции нет на диске; message — текст ошибки оболочки.
         // Пути длиннее MAX_PATH уходят оболочке в виде имён 8.3 (Native.ShellPath); наличие

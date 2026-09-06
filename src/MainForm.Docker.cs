@@ -196,11 +196,11 @@ namespace WindowsProcessCleaner
                 : Tr.S("  1. выполнено: docker ", "  1. run: docker ") + string.Join("; docker ", cmds) + ";\r\n";
             DialogResult dr = MessageBox.Show(this,
                 Tr.S("Будет выполнено одним действием:\r\n", "This will do, in one action:\r\n") + step1 +
-                Tr.S("  2. остановлен Docker (все запущенные контейнеры завершатся!);\r\n" +
-                     "  3. сжат виртуальный диск — реально освободится место на диске Windows;\r\n" +
+                Tr.S("  2. остановлен Docker и весь WSL (wsl --shutdown: завершатся все запущенные контейнеры И все открытые сеансы дистрибутивов WSL — Ubuntu и т.п.!);\r\n" +
+                     "  3. сжат виртуальный диск — реально освободится место на диске Windows (на большом диске это может занять 10–30 минут);\r\n" +
                      "  4. Docker Desktop запустится снова.",
-                     "  2. stop Docker (all running containers will exit!);\r\n" +
-                     "  3. compact the virtual disk — actually frees Windows disk space;\r\n" +
+                     "  2. stop Docker and all of WSL (wsl --shutdown: every running container AND every open WSL distro session — Ubuntu etc. — will exit!);\r\n" +
+                     "  3. compact the virtual disk — actually frees Windows disk space (10–30 minutes on a large disk);\r\n" +
                      "  4. start Docker Desktop again.")
                 + (scope == 3 ? VolumeWarning() : "") + Tr.S("\r\n\r\nПродолжить?", "\r\n\r\nContinue?"),
                 "Docker", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);

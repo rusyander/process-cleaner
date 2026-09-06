@@ -185,7 +185,17 @@ namespace WindowsProcessCleaner
                 string scriptPath = Path.Combine(Path.GetTempPath(), "wpc_compact.txt");
                 try { File.WriteAllText(scriptPath, script); } catch { }
                 sb.AppendLine("> diskpart compact vdisk …");
-                RunCapture("diskpart", "/s \"" + scriptPath + "\"", out ec);
+                // Сжатие диска на десятки гигабайт идёт дольше двух минут; общий RunCapture с
+                // 2-минутным таймаутом убивал diskpart посреди compact, и vhdx оставался
+                // подключённым — Docker после этого не стартовал до перезагрузки. Здесь ждём до получаса.
+                string dpOut; int dpCode;
+                bool dpRan = RunCapture(Path.Combine(Environment.SystemDirectory, "diskpart.exe"), "/s \"" + scriptPath + "\"",
+                                        1800000, out dpOut, out dpCode, OemEncoding(), null);
+                if (!string.IsNullOrEmpty(dpOut)) sb.AppendLine(Lf(dpOut.Trim()));
+                if (!dpRan)
+                    sb.AppendLine(Tr.S("[ошибка] diskpart: ", "[error] diskpart: ") + RunFailText(false, dpCode));
+                else if (dpCode != 0)
+                    sb.AppendLine(Tr.S("[ошибка] diskpart завершился с кодом ", "[error] diskpart exited with code ") + dpCode);
                 try { File.Delete(scriptPath); } catch { }
 
                 after = before;

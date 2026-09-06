@@ -500,7 +500,8 @@ namespace WindowsProcessCleaner
                         foreach (CleanCategory c in _engine.BuildCleanCategories()) if (c.Id == "sys") { sys = c; break; }
                         if (sys != null)
                         {
-                            _engine.ResetDiskCancel();
+                            // не сбрасывать чужой «Стоп»: флаг общий с вкладкой очистки
+                            _engine.TryResetDiskCancel();
                             _engine.AnalyzeCategory(sys);
                             if (sys.Size > 0)
                             {
