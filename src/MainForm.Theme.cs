@@ -406,22 +406,90 @@ namespace WindowsProcessCleaner
             BackColor = _theme.Bg;
             ForeColor = _theme.Text;
             ApplyThemeTo(this);
+            RecolorRows(this);
             Control nav = null;
             foreach (Control c in Controls) if (c.Name == "nav") { nav = c; break; }
             if (nav != null) nav.BackColor = _theme.Bg;
             UpdateNav();
+            ApplyHomeTheme();
             ApplyTitleBar();
+            // правая панель «Windows: лишнее» красит заголовки цветом темы посимвольно — перерисовать
+            if (_tvDebloat != null) ShowDebloatNode(_tvDebloat.SelectedNode);
             Invalidate();
         }
 
-        private void ApplyTitleBar()
+        private void ApplyTitleBar() { ApplyTitleBar(this); }
+
+        // Строки списков красятся цветами палитры в момент заполнения (Surface, CandidateBg, WhiteBg,
+        // Text, Subtle). При смене темы без перезаполнения — предпросмотр в настройках, переключение
+        // Windows при теме «как в системе» — список становился тёмным, а его строки оставались
+        // светлыми. Перекрашиваем строки всех списков: цвет прежней палитры → тот же цвет новой.
+        private Theme _themeApplied;
+
+        private void RecolorRows(Control root)
         {
-            if (!IsHandleCreated) return;
+            Theme from = _themeApplied;
+            _themeApplied = _theme;
+            if (from == null || from == _theme) return;
+            RecolorRows(root, from, _theme);
+        }
+
+        private static void RecolorRows(Control root, Theme from, Theme to)
+        {
+            foreach (Control c in root.Controls)
+            {
+                ListView lv = c as ListView;
+                if (lv != null && lv.Items.Count > 0)
+                {
+                    lv.BeginUpdate();
+                    try
+                    {
+                        foreach (ListViewItem it in lv.Items)
+                        {
+                            Color m = MapColor(it.ForeColor, from, to); if (m != it.ForeColor) it.ForeColor = m;
+                            m = MapColor(it.BackColor, from, to); if (m != it.BackColor) it.BackColor = m;
+                            if (!it.UseItemStyleForSubItems)
+                                for (int i = 1; i < it.SubItems.Count; i++)
+                                {
+                                    ListViewItem.ListViewSubItem si = it.SubItems[i];
+                                    m = MapColor(si.ForeColor, from, to); if (m != si.ForeColor) si.ForeColor = m;
+                                    m = MapColor(si.BackColor, from, to); if (m != si.BackColor) si.BackColor = m;
+                                }
+                        }
+                    }
+                    finally { lv.EndUpdate(); }
+                }
+                if (c.Controls.Count > 0) RecolorRows(c, from, to);
+            }
+        }
+
+        private static Color MapColor(Color x, Theme from, Theme to)
+        {
+            if (x.IsEmpty) return x;
+            int a = x.ToArgb();
+            if (a == from.Surface.ToArgb()) return to.Surface;
+            if (a == from.CandidateBg.ToArgb()) return to.CandidateBg;
+            if (a == from.WhiteBg.ToArgb()) return to.WhiteBg;
+            if (a == from.Bg.ToArgb()) return to.Bg;
+            if (a == from.Header.ToArgb()) return to.Header;
+            if (a == from.Text.ToArgb()) return to.Text;
+            if (a == from.Subtle.ToArgb()) return to.Subtle;
+            if (a == from.Accent.ToArgb()) return to.Accent;
+            if (a == from.AccentText.ToArgb()) return to.AccentText;
+            if (a == from.Border.ToArgb()) return to.Border;
+            return x;
+        }
+
+        // Тёмный заголовок окна (DWM) — для главного окна и для дочерних диалогов: без этого в тёмной
+        // теме у диалога «Состав…»/«Куда перенести» оставалась белая полоса заголовка.
+        private void ApplyTitleBar(Form f)
+        {
+            if (f == null || !f.IsHandleCreated) return;
             try
             {
                 int on = _theme.Dark ? 1 : 0;
-                if (Native.DwmSetWindowAttribute(Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, 4) != 0)
-                    Native.DwmSetWindowAttribute(Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ref on, 4);
+                if (Native.DwmSetWindowAttribute(f.Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, 4) != 0)
+                    Native.DwmSetWindowAttribute(f.Handle, Native.DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ref on, 4);
             }
             catch { }
         }
@@ -447,6 +515,18 @@ namespace WindowsProcessCleaner
             if (Theme.SystemIsLight() != _theme.Dark) return;   // уже совпадает
             _theme = Theme.Resolve("system");
             ApplyThemeAll();
+        }
+
+        // Полосы прокрутки — не клиентская область, их рисует система по теме ОКНА: без
+        // DarkMode_Explorer в тёмной палитре они оставались светлыми (списки, вывод Docker,
+        // прокручиваемая страница настроек). Пересоздание дескриптора сбрасывает тему —
+        // поэтому подписка на HandleCreated, один раз на контрол.
+        private readonly HashSet<Control> _scrollThemed = new HashSet<Control>();
+
+        private void DarkScrollbars(Control c)
+        {
+            try { Native.SetWindowTheme(c.Handle, _theme.Dark ? "DarkMode_Explorer" : null, null); } catch { }
+            if (_scrollThemed.Add(c)) c.HandleCreated += delegate { DarkScrollbars(c); };
         }
 
         private void ApplyThemeTo(Control root)
@@ -507,6 +587,7 @@ namespace WindowsProcessCleaner
                     c.ForeColor = _theme.Text;
                     ((RichTextBox)c).BorderStyle = BorderStyle.None;
                     BoxUnlessWrapped(c);
+                    DarkScrollbars(c);
                 }
                 else if (c is TextBox)
                 {
@@ -514,6 +595,7 @@ namespace WindowsProcessCleaner
                     c.ForeColor = _theme.Text;
                     ((TextBox)c).BorderStyle = BorderStyle.None;
                     BoxUnlessWrapped(c);
+                    if (((TextBox)c).Multiline) DarkScrollbars(c);
                 }
                 else if (c is NumericUpDown)
                 {
@@ -555,6 +637,7 @@ namespace WindowsProcessCleaner
                     c.ForeColor = _theme.Text;
                     ((ListView)c).BorderStyle = BorderStyle.None;
                     Boxed(c);
+                    DarkScrollbars(c);
                 }
                 else if (c is TreeView)
                 {
@@ -594,6 +677,15 @@ namespace WindowsProcessCleaner
                     c.BackColor = box ? _theme.Surface : _theme.Bg;
                     c.ForeColor = _theme.Text;
                     if (box) Boxed(c);
+                    if (c is ScrollableControl && ((ScrollableControl)c).AutoScroll) DarkScrollbars(c);
+                }
+                else if (c.BackColor.ToArgb() == SystemColors.Control.ToArgb() || c.BackColor.ToArgb() == SystemColors.Window.ToArgb()
+                         || c.BackColor.ToArgb() == Color.White.ToArgb())
+                {
+                    // контрол не из списка выше с системным фоном: хотя бы фон и текст — по теме,
+                    // чтобы новый тип контрола не всплыл светлым пятном в тёмной палитре
+                    c.BackColor = _theme.Bg;
+                    c.ForeColor = _theme.Text;
                 }
                 if (c.Controls.Count > 0) ApplyThemeTo(c);
             }

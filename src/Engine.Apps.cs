@@ -71,11 +71,16 @@ namespace WindowsProcessCleaner
                                 app.Publisher = s.GetValue("Publisher") as string;
                                 app.UninstallCmd = unins;
                                 app.QuietCmd = s.GetValue("QuietUninstallString") as string;
-                                app.ExePath = ResolveAppExe(s.GetValue("DisplayIcon") as string,
-                                                            s.GetValue("InstallLocation") as string, disp);
+                                string loc = s.GetValue("InstallLocation") as string;
+                                app.InstallLocation = loc;
+                                app.ExePath = ResolveAppExe(s.GetValue("DisplayIcon") as string, loc, disp);
                                 object es = s.GetValue("EstimatedSize");
                                 if (es is int) app.EstimatedSizeBytes = ((long)(int)es) * 1024L;
-                                map[disp] = app;
+                                app.RegKey = (root == Registry.CurrentUser ? "HKCU\\" : "HKLM\\") + sub + "\\" + name;
+                                // Ключ — имя + версия + команда: одноимённые записи из разных ульев (x86 и x64,
+                                // две версии одной программы) схлопывались в одну строку, и вторую было не
+                                // удалить; полностью одинаковые дубли по-прежнему показываются один раз.
+                                map[disp + "\n" + (app.Version ?? "") + "\n" + unins] = app;
                             }
                         }
                         catch { }
@@ -83,6 +88,61 @@ namespace WindowsProcessCleaner
                 }
             }
             catch { }
+        }
+
+        // Запись в реестре ещё на месте? Исчезла — деинсталляция завершилась.
+        public bool UninstallEntryExists(InstalledApp app)
+        {
+            if (app == null || string.IsNullOrEmpty(app.RegKey)) return false;
+            RegistryKey root = app.RegKey.StartsWith("HKCU\\") ? Registry.CurrentUser : Registry.LocalMachine;
+            try
+            {
+                using (RegistryKey k = root.OpenSubKey(app.RegKey.Substring(5)))
+                    return k != null && !string.IsNullOrEmpty(k.GetValue("UninstallString") as string);
+            }
+            catch { return false; }
+        }
+
+        private HashSet<int> _uninstallPreSnapshot;   // процессы, жившие до запуска деинсталлятора
+
+        // Ждёт окончания деинсталляции: пока запись в реестре на месте, а запущенный процесс или
+        // его потомки живы. Inno Setup (unins000.exe) и bootstrapper-ы копируют себя во временную
+        // папку и выходят сразу — ожидание одного лишь запущенного процесса заканчивалось до начала
+        // удаления, и список перечитывался с ещё не удалённой программой. Без дескриптора процесса
+        // ждём только реестр, не дольше 30 с. true = запись исчезла.
+        public bool WaitUninstall(InstalledApp app, Process started, int maxMs)
+        {
+            DateTime deadline = DateTime.Now.AddMilliseconds(maxMs);
+            DateTime softDeadline = DateTime.Now.AddSeconds(30);
+            HashSet<int> family = new HashSet<int>();
+            if (started != null) { try { family.Add(started.Id); } catch { } }
+            HashSet<int> pre = _uninstallPreSnapshot ?? new HashSet<int>();
+            while (DateTime.Now < deadline)
+            {
+                if (!UninstallEntryExists(app)) return true;
+                bool alive;
+                if (family.Count == 0) alive = DateTime.Now < softDeadline;
+                else
+                {
+                    List<RawProc> snap = Snapshot();
+                    bool grown = true;
+                    while (grown)
+                    {
+                        grown = false;
+                        foreach (RawProc r in snap)
+                            if (family.Contains(r.Ppid) && !family.Contains(r.Pid) && !pre.Contains(r.Pid)) { family.Add(r.Pid); grown = true; }
+                    }
+                    alive = false;
+                    foreach (RawProc r in snap) if (family.Contains(r.Pid)) { alive = true; break; }
+                }
+                if (!alive)
+                {
+                    Thread.Sleep(1500);   // реестр обновляется последним — короткая пауза после последнего процесса
+                    return !UninstallEntryExists(app);
+                }
+                Thread.Sleep(700);
+            }
+            return !UninstallEntryExists(app);
         }
 
         // Запуск штатного деинсталлятора. null = запущен, иначе причина (уже локализована) —
@@ -114,6 +174,9 @@ namespace WindowsProcessCleaner
             ProcessStartInfo psi = new ProcessStartInfo(exe, args);
             psi.UseShellExecute = true;
             if (rooted) { try { psi.WorkingDirectory = Path.GetDirectoryName(exe); } catch { } }
+            HashSet<int> pre = new HashSet<int>();
+            try { foreach (RawProc r in Snapshot()) pre.Add(r.Pid); } catch { }
+            _uninstallPreSnapshot = pre;
             started = Process.Start(psi);
             return null;
         }
@@ -168,8 +231,16 @@ namespace WindowsProcessCleaner
         }
 
         // ================= АВТОЗАПУСК =================
+        // Установщик, деинсталлятор, апдейтер, репортер — не «главный exe» программы.
+        private static bool LooksLikeInstaller(string fn)
+        {
+            return fn.StartsWith("unins") || fn.StartsWith("setup") || fn.EndsWith("setup") || fn.Contains("install")
+                || fn.Contains("update") || fn.Contains("crash") || fn.Contains("report") || fn.Contains("helper");
+        }
+
         private string ResolveAppExe(string displayIcon, string installLoc, string name)
         {
+            string iconExe = null;
             // 1) из DisplayIcon ("C:\...\app.exe,0")
             if (!string.IsNullOrEmpty(displayIcon))
             {
@@ -181,7 +252,19 @@ namespace WindowsProcessCleaner
                     if (int.TryParse(ip.Substring(comma + 1).Trim(), out idx)) ip = ip.Substring(0, comma);
                 }
                 ip = ip.Trim().Trim('"');
-                try { if (ip.ToLowerInvariant().EndsWith(".exe") && File.Exists(ip)) return ip; }
+                try
+                {
+                    if (ip.ToLowerInvariant().EndsWith(".exe") && File.Exists(ip))
+                    {
+                        // DisplayIcon у Docker Desktop и подобных смотрит на установщик («Docker Desktop
+                        // Installer.exe»): такой exe не совпадал с записью автозапуска, и программа
+                        // горела оранжевым как «чужая». Сначала настоящий exe из папки установки,
+                        // установщик — запасной вариант.
+                        string ifn = new string(Path.GetFileNameWithoutExtension(ip).ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+                        if (!LooksLikeInstaller(ifn)) return ip;
+                        iconExe = ip;
+                    }
+                }
                 catch { }
             }
             // 2) поиск exe в InstallLocation по имени программы
@@ -210,8 +293,7 @@ namespace WindowsProcessCleaner
                         {
                             string fn = new string(Path.GetFileNameWithoutExtension(e).ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
                             if (fn.Length < 3 || key.Length < 3) continue;
-                            if (fn.StartsWith("unins") || fn.StartsWith("setup") || fn.Contains("update") || fn.Contains("crash")
-                                || fn.Contains("report") || fn.Contains("helper")) continue;
+                            if (LooksLikeInstaller(fn)) continue;
                             if (fn == key) return e;
                             if (key.Contains(fn) || fn.Contains(key))
                             {
@@ -224,7 +306,7 @@ namespace WindowsProcessCleaner
                 }
             }
             catch { }
-            return null;
+            return iconExe;
         }
 
         private string ParseExeFromCommand(string cmd)

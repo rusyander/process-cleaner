@@ -792,6 +792,7 @@ namespace WindowsProcessCleaner
             dlg.CancelButton = cancel;
             ApplyThemeTo(dlg);
             tv.BackColor = _theme.Surface; tv.ForeColor = _theme.Text;
+            dlg.HandleCreated += delegate { ApplyTitleBar(dlg); };
 
             ApplyDpiTo(dlg);
             DialogResult dr = dlg.ShowDialog(this);

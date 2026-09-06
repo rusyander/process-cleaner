@@ -58,6 +58,8 @@ namespace WindowsProcessCleaner
         [DataMember] public bool UpdateUseChoco;          // опрашивать Chocolatey, если он установлен
         [DataMember] public int UpdateBatchSize;           // сколько пакетов отдавать менеджеру одной командой
         [DataMember] public int DiskMinMb;                 // вкладка «Диск»: порог крупных файлов и дубликатов, МБ (1..10240)
+        [DataMember] public bool SmartBoostEnabled;        // «умное ускорение»: чистить Standby Memory, когда RAM занята сильнее порога
+        [DataMember] public int SmartBoostPercent;         // порог занятости RAM, % (50..99)
         // Версия схемы: отличает "поле отсутствует в старом config.json" (bool => false)
         // от "пользователь выключил". Без неё апгрейд молча гасит новые флаги.
         [DataMember] public int ConfigVersion;
@@ -106,11 +108,13 @@ namespace WindowsProcessCleaner
             c.UpdateUseChoco = true;
             c.UpdateBatchSize = 5;
             c.DiskMinMb = 1;
+            c.SmartBoostEnabled = false;
+            c.SmartBoostPercent = 90;
             c.ConfigVersion = CurrentVersion;
             return c;
         }
 
-        public const int CurrentVersion = 3;
+        public const int CurrentVersion = 4;
 
         public void Normalize()
         {
@@ -138,6 +142,11 @@ namespace WindowsProcessCleaner
             {
                 UpdateBatchSize = 5;
             }
+            if (ConfigVersion < 4)
+            {
+                // умное ускорение выключено по умолчанию: порог задаём, флаг оставляем снятым
+                SmartBoostPercent = 90;
+            }
             ConfigVersion = CurrentVersion;
             // 1 = по одному (точный статус из кода возврата); больше 20 в одной команде
             // не даёт выигрыша и растягивает срок, за который непонятно, что происходит.
@@ -146,6 +155,7 @@ namespace WindowsProcessCleaner
             // отсутствующее поле в старом config.json читается как 0 — это и есть «по умолчанию 1 МБ»
             if (DiskMinMb < 1) DiskMinMb = 1;
             if (DiskMinMb > 10240) DiskMinMb = 10240;
+            if (SmartBoostPercent < 50 || SmartBoostPercent > 99) SmartBoostPercent = 90;
             if (MonitorIntervalSeconds < 5) MonitorIntervalSeconds = 15;
             if (MonitorIntervalSeconds > 300) MonitorIntervalSeconds = 300;
             if (CleanSkipRecentMinutes < 0) CleanSkipRecentMinutes = 0;
@@ -307,6 +317,8 @@ namespace WindowsProcessCleaner
         public string ExePath;   // главный exe (из DisplayIcon), если удалось определить
         public long EstimatedSizeBytes;
         public bool InAutostart; // вычисляется во вкладке автозапуска
+        public string RegKey;    // раздел Uninstall, откуда взята запись (HKLM\… или HKCU\…): пропал — деинсталляция завершилась
+        public string InstallLocation;
     }
 
     // Запись автозапуска (реестр Run или папка «Автозагрузка»).

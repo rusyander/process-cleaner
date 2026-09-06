@@ -49,12 +49,30 @@ namespace WindowsProcessCleaner
             AddDockerButton(flow, Tr.S("Полная очистка", "Full cleanup"), "system prune -a -f --volumes", true);
 
             Button bCompact = new RoundButton();
-            bCompact.Text = Tr.S("★ Очистить всё и сжать диск Docker (вернуть место Windows)",
-                                 "★ Clean all & compact Docker disk (reclaim Windows space)");
-            bCompact.Width = 470; bCompact.Height = 38; bCompact.Margin = new Padding(4, 6, 4, 4);
+            bCompact.Text = Tr.S("★ Сжать диск Docker (вернуть место Windows)",
+                                 "★ Compact Docker disk (reclaim Windows space)");
+            bCompact.Width = 400; bCompact.Height = 38; bCompact.Margin = new Padding(4, 6, 4, 4);
             bCompact.Tag = "primary";
             bCompact.Click += delegate { DoCompactDocker(); };
             flow.Controls.Add(bCompact);
+
+            // Что удалить перед сжатием — выбор пользователя, по умолчанию только безопасное.
+            Label lblPrune = new Label();
+            lblPrune.Name = "muted";
+            lblPrune.AutoSize = true;
+            lblPrune.Text = Tr.S("перед сжатием удалить:", "before compacting remove:");
+            lblPrune.Margin = new Padding(10, 16, 4, 4);
+            flow.Controls.Add(lblPrune);
+            _cmbDockerPrune = new RoundComboBox();
+            _cmbDockerPrune.DropDownStyle = ComboBoxStyle.DropDownList;
+            _cmbDockerPrune.Width = 560; _cmbDockerPrune.Margin = new Padding(4, 10, 4, 4);
+            _cmbDockerPrune.Items.AddRange(new object[] {
+                Tr.S("ничего — только сжать", "nothing — compact only"),
+                Tr.S("безопасное: остановленные контейнеры, образы без тега, кэш сборки", "safe: stopped containers, dangling images, build cache"),
+                Tr.S("+ все неиспользуемые образы (скачаются заново)", "+ all unused images (re-downloaded when needed)"),
+                Tr.S("всё, включая неиспользуемые тома (данные проектов!)", "everything, incl. unused volumes (project data!)") });
+            _cmbDockerPrune.SelectedIndex = 1;
+            flow.Controls.Add(_cmbDockerPrune);
 
             Label note = new Label();
             note.Name = "muted";
@@ -118,6 +136,18 @@ namespace WindowsProcessCleaner
         // Второй клик во время выполнения запускал вторую docker-команду параллельно
         // с первой; теперь на время выполнения кнопки просто игнорируются.
         private int _dockerBusy;
+        private RoundComboBox _cmbDockerPrune;
+
+        private static bool TouchesVolumes(string args)
+        {
+            return args.IndexOf("volume", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string VolumeWarning()
+        {
+            return Tr.S("\r\n⚠ Неиспользуемые тома могут хранить базы данных остановленных проектов — вернуть их будет нельзя.",
+                        "\r\n⚠ Unused volumes may hold databases of stopped projects — they cannot be recovered.");
+        }
 
         private void RunDocker(string title, string args, bool destructive)
         {
@@ -126,7 +156,8 @@ namespace WindowsProcessCleaner
             {
                 DialogResult dr = MessageBox.Show(this,
                     Tr.S("Выполнить: docker " + args + " ?\r\nБудут удалены неиспользуемые данные Docker.",
-                         "Run: docker " + args + " ?\r\nUnused Docker data will be removed."),
+                         "Run: docker " + args + " ?\r\nUnused Docker data will be removed.")
+                    + (TouchesVolumes(args) ? VolumeWarning() : ""),
                     "Docker", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 if (dr != DialogResult.Yes) { Interlocked.Exchange(ref _dockerBusy, 0); return; }
             }
@@ -158,17 +189,20 @@ namespace WindowsProcessCleaner
         private void DoCompactDocker()
         {
             if (Interlocked.CompareExchange(ref _dockerBusy, 1, 0) != 0) return;
+            int scope = _cmbDockerPrune != null ? Math.Max(0, _cmbDockerPrune.SelectedIndex) : 0;
+            string[] cmds = Engine.DockerPruneCommands(scope);
+            string step1 = cmds.Length == 0
+                ? Tr.S("  1. ничего не удаляется (только сжатие);\r\n", "  1. nothing is removed (compaction only);\r\n")
+                : Tr.S("  1. выполнено: docker ", "  1. run: docker ") + string.Join("; docker ", cmds) + ";\r\n";
             DialogResult dr = MessageBox.Show(this,
-                Tr.S("Будет выполнено одним действием:\r\n" +
-                     "  1. удалено всё неиспользуемое (образы, тома, кэш сборки, остановленные контейнеры);\r\n" +
-                     "  2. остановлен Docker (все запущенные контейнеры завершатся!);\r\n" +
+                Tr.S("Будет выполнено одним действием:\r\n", "This will do, in one action:\r\n") + step1 +
+                Tr.S("  2. остановлен Docker (все запущенные контейнеры завершатся!);\r\n" +
                      "  3. сжат виртуальный диск — реально освободится место на диске Windows;\r\n" +
-                     "  4. Docker Desktop запустится снова.\r\n\r\nПродолжить?",
-                     "This will do, in one action:\r\n" +
-                     "  1. remove all unused data (images, volumes, build cache, stopped containers);\r\n" +
+                     "  4. Docker Desktop запустится снова.",
                      "  2. stop Docker (all running containers will exit!);\r\n" +
                      "  3. compact the virtual disk — actually frees Windows disk space;\r\n" +
-                     "  4. start Docker Desktop again.\r\n\r\nContinue?"),
+                     "  4. start Docker Desktop again.")
+                + (scope == 3 ? VolumeWarning() : "") + Tr.S("\r\n\r\nПродолжить?", "\r\n\r\nContinue?"),
                 "Docker", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (dr != DialogResult.Yes) { Interlocked.Exchange(ref _dockerBusy, 0); return; }
 
@@ -180,7 +214,7 @@ namespace WindowsProcessCleaner
             Thread t = new Thread(delegate()
             {
                 string res;
-                try { res = _engine.CompactDockerDisk(); }
+                try { res = _engine.CompactDockerDisk(scope); }
                 catch (Exception ex)
                 {
                     res = Tr.S("[ошибка] ", "[error] ") + ex.Message

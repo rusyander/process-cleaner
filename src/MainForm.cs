@@ -72,12 +72,13 @@ namespace WindowsProcessCleaner
         private Label _lblStartupInfo;
         private bool _suppressStartup;
         private Panel _navPanel;
+        private Font _navFont, _navFontBold;
 
         // Настройки — контролы
         private NumericUpDown _numCpu, _numIdle, _numMinLife, _numInterval, _numGlobalIdle;
-        private NumericUpDown _numMonInterval, _numSkipRecent, _numUpdBatch;
+        private NumericUpDown _numMonInterval, _numSkipRecent, _numUpdBatch, _numSmartBoost;
         private CheckBox _chkAuto, _chkAutostart, _chkStartMin, _chkExcludeInstalled;
-        private CheckBox _chkMonitor, _chkEmptyWs, _chkCleanLog;
+        private CheckBox _chkMonitor, _chkEmptyWs, _chkCleanLog, _chkSmartBoost;
         private CheckBox _chkUpdUnknown, _chkUpdChoco;
         private TextBox _txtWatch, _txtWhite, _txtPorts, _txtCleanExclude, _txtUpdExclude;
         private ComboBox _cmbTheme;
@@ -117,7 +118,7 @@ namespace WindowsProcessCleaner
 
             _autoTimer = new System.Windows.Forms.Timer();
             _autoTimer.Interval = 30000; // проверяем расписание каждые 30 c
-            _autoTimer.Tick += delegate { CheckAutoSchedule(); };
+            _autoTimer.Tick += delegate { CheckAutoSchedule(); SmartBoostTick(); };
             _autoTimer.Start();
             RescheduleAuto();
 
@@ -133,25 +134,27 @@ namespace WindowsProcessCleaner
             // Уходим со вкладки очистки — останавливаем обход диска: продолжать его
             // ради экрана, которого не видно, значит впустую грузить диск и CPU.
             if (_currentPage == PageClean && index != PageClean) _engine.CancelDiskWork();
+            if (_currentPage == PageHome && index != PageHome) HomeLeave();
 
             _currentPage = index;
             for (int i = 0; i < _pages.Length; i++) _pages[i].Visible = (i == index);
             UpdateNav();
-            // подгоняем только видимый список, а не все пять
+            // подгоняем только видимый список, а не все
             AutoFillLastColumnDeferred(VisibleList(index));
             RefreshCurrentPage(index);
         }
 
         // Порядок вкладок задан в _pages; держим индексы именами, чтобы обработчики
         // навигации не разъезжались с массивом при вставке новой вкладки.
-        private const int PageScan = 0, PageDev = 1, PageClean = 2, PageDisk = 3, PageBrowsers = 4,
-                          PageDocker = 5, PageApps = 6, PageUpdates = 7, PageStartup = 8,
-                          PageSettings = 9, PageHistory = 10;
+        private const int PageHome = 0, PageScan = 1, PageDev = 2, PageClean = 3, PageDisk = 4, PageBrowsers = 5,
+                          PageDocker = 6, PageApps = 7, PageUpdates = 8, PageStartup = 9,
+                          PageDebloat = 10, PageTools = 11, PageSettings = 12, PageHistory = 13;
 
         private ListView VisibleList(int index)
         {
             switch (index)
             {
+                case PageHome: return _lvHealth;
                 case PageScan: return _lvScan;
                 case PageDev: return _lvPorts;
                 case PageClean: return _lvClean;
@@ -173,9 +176,12 @@ namespace WindowsProcessCleaner
             {
                 switch (index)
                 {
+                    case PageHome: HomeEnter(); break;
                     case PageDev: RefreshPorts(); break;
                     case PageApps: RefreshApps(); break;
                     case PageStartup: RefreshStartup(); break;
+                    case PageDebloat: RefreshDebloat(false); break;
+                    case PageTools: RefreshToolsState(); break;
                     case PageHistory: RefreshHistory(); break;
                     case PageBrowsers: RefreshBrowsers(false); break;
                 }
@@ -187,6 +193,7 @@ namespace WindowsProcessCleaner
 
         private void FillColumns()
         {
+            AutoFillLastColumnDeferred(_lvHealth);
             AutoFillLastColumnDeferred(_lvScan);
             AutoFillLastColumnDeferred(_lvPorts);
             AutoFillLastColumnDeferred(_lvHistory);
@@ -197,108 +204,117 @@ namespace WindowsProcessCleaner
             AutoFillLastColumnDeferred(_lvBrowser);
         }
 
+        // Цвет подложки активного пункта и наведения — чуть светлее/темнее фона окна.
+        private Color NavHighlight()
+        {
+            return _theme.Dark ? ControlPaint.Light(_theme.Bg, 0.30f) : Color.FromArgb(226, 229, 234);
+        }
+
         private void UpdateNav()
         {
             if (_navButtons == null) return;
+            Color hl = NavHighlight();
             for (int i = 0; i < _navButtons.Length; i++)
             {
                 Button b = _navButtons[i];
                 if (b == null) continue;
                 b.UseVisualStyleBackColor = false;
                 b.FlatAppearance.BorderSize = 0;
-                b.BackColor = _theme.Bg;
+                b.FlatAppearance.MouseOverBackColor = hl;
+                b.FlatAppearance.MouseDownBackColor = hl;
                 if (i == _currentPage)
                 {
+                    b.BackColor = hl;
                     b.ForeColor = _theme.Accent;
-                    b.FlatAppearance.MouseOverBackColor = _theme.Bg;
+                    b.Font = _navFontBold;
                 }
                 else
                 {
-                    b.ForeColor = _theme.Subtle;
-                    b.FlatAppearance.MouseOverBackColor = _theme.Dark
-                        ? ControlPaint.Light(_theme.Bg, 0.30f)
-                        : ControlPaint.Dark(_theme.Bg, 0.04f);
+                    b.BackColor = _theme.Bg;
+                    b.ForeColor = _theme.Text;
+                    b.Font = _navFont;
                 }
             }
             if (_navPanel != null) _navPanel.Invalidate();
         }
 
         // ---------- UI ----------
+        // Ширина боковой панели навигации (макет 96 DPI; форма масштабирует сама).
+        private const int NavWidth = 196;
+
         private void BuildUi()
         {
             Text = "Windows Process Cleaner";
-            Width = 1200;
-            Height = 740;
+            Width = 1320;
+            Height = 760;
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 10.5F);
-            // Одиннадцать вкладок навигации даже с минимальным отступом занимают ~1090 px:
-            // при прежних 1040/1060 «История» уезжала за правый край. Минимум 1130, по
-            // умолчанию 1200; панели кнопок переносятся по строкам (MkToolbar) и ширину не
-            // диктуют. Подгонка под рабочую область экрана — ClampToScreen() после DPI.
-            MinimumSize = new Size(1130, 620);
+            // Навигация — боковая панель слева (14 разделов в один верхний ряд уже не помещались):
+            // содержимому остаётся ширина окна минус NavWidth. Минимум 1200 даёт страницам ~1000 px —
+            // столько им хватало и раньше; подгонка под рабочую область экрана — ClampToScreen() после DPI.
+            MinimumSize = new Size(1200, 640);
             Icon = _iconWindow;
             ShowIcon = true;
 
             // Собственная навигация вместо TabControl (полностью тематизируется).
             Panel nav = new Panel();
-            nav.Dock = DockStyle.Top;
-            nav.Height = 48;
+            nav.Dock = DockStyle.Left;
+            nav.Width = NavWidth;
             nav.Name = "nav";
 
             _content = new Panel();
             _content.Dock = DockStyle.Fill;
 
-            _pages = new Control[] { BuildScanTab(), BuildDevTab(), BuildCleanTab(), BuildDiskTab(), BuildBrowserTab(), BuildDockerTab(), BuildAppsTab(), BuildUpdatesTab(), BuildStartupTab(), BuildSettingsTab(), BuildHistoryTab() };
-            string[] titles = { Tr.S("Сканирование", "Scan"), "Dev Cleanup", Tr.S("Очистка диска", "Disk Cleanup"), Tr.S("Диск", "Disk"), Tr.S("Браузеры", "Browsers"), "Docker", Tr.S("Программы", "Programs"), Tr.S("Обновления", "Updates"), Tr.S("Автозапуск", "Startup"), Tr.S("Настройки", "Settings"), Tr.S("История", "History") };
+            _pages = new Control[] { BuildHomeTab(), BuildScanTab(), BuildDevTab(), BuildCleanTab(), BuildDiskTab(), BuildBrowserTab(), BuildDockerTab(), BuildAppsTab(), BuildUpdatesTab(), BuildStartupTab(), BuildDebloatTab(), BuildToolsTab(), BuildSettingsTab(), BuildHistoryTab() };
+            string[] titles = { Tr.S("Главная", "Home"), Tr.S("Сканирование", "Scan"), "Dev Cleanup", Tr.S("Очистка диска", "Disk Cleanup"), Tr.S("Диск", "Disk"), Tr.S("Браузеры", "Browsers"), "Docker", Tr.S("Программы", "Programs"), Tr.S("Обновления", "Updates"), Tr.S("Автозапуск", "Startup"), Tr.S("Windows: лишнее", "Windows bloat"), Tr.S("Инструменты", "Tools"), Tr.S("Настройки", "Settings"), Tr.S("История", "History") };
+            // Разрывы между группами: главная | обслуживание | программы | система | служебное.
+            int[] groupStart = { PageScan, PageApps, PageDebloat, PageSettings };
 
+            _navFont = new Font(Font, FontStyle.Regular);
+            _navFontBold = new Font(Font, FontStyle.Bold);
             _navButtons = new Button[titles.Length];
             for (int i = 0; i < titles.Length; i++)
             {
                 Button b = new Button();
                 b.Text = titles[i];
-                b.Top = 4; b.Height = 40;
+                b.Height = 34;
                 b.FlatStyle = FlatStyle.Flat;
                 b.FlatAppearance.BorderSize = 0;
-                b.Font = new Font(Font, FontStyle.Bold);
+                b.Font = _navFont;
+                b.TextAlign = ContentAlignment.MiddleLeft;
+                b.Padding = new Padding(10, 0, 0, 0);
+                b.TabStop = false;
                 int idx = i;
                 b.Click += delegate { ShowPage(idx); };
                 nav.Controls.Add(b);
                 _navButtons[i] = b;
             }
-            // Ширины считаем по тексту и пересчитываем при каждом изменении ширины окна:
-            // раньше они вычислялись один раз под стартовую ширину, и на меньшей последняя
-            // вкладка уходила за край. Не влезает — режем отступ (22 → 16 → 10 → 6); если и
-            // так не влезает (крупный DPI, длинные заголовки), ужимаем кнопки пропорционально:
-            // чуть более тесный текст лучше обрезанной вкладки.
-            Font navFont = new Font(Font, FontStyle.Bold);
+
+            // Подпись прав внизу панели: отдельные разделы («Windows: лишнее», «Инструменты») без
+            // прав администратора умеют не всё, и видно это должно быть сразу.
+            _lblNavAdmin = new Label();
+            _lblNavAdmin.Dock = DockStyle.Bottom;
+            _lblNavAdmin.Height = 24;
+            _lblNavAdmin.Name = "muted";
+            _lblNavAdmin.Font = new Font(Font.FontFamily, 9F);
+            _lblNavAdmin.TextAlign = ContentAlignment.MiddleLeft;
+            _lblNavAdmin.Padding = new Padding(16, 0, 0, 0);
+            _lblNavAdmin.Text = IsElevated() ? Tr.S("● администратор", "● administrator") : Tr.S("○ без прав администратора", "○ not administrator");
+            nav.Controls.Add(_lblNavAdmin);
+
+            // Пункты идут столбиком; все расстояния считаются от высоты кнопки, которую форма
+            // масштабирует под DPI, поэтому раскладка одинакова при 100 % и 150 %.
             EventHandler layoutNav = delegate
             {
-                int avail = (nav.Parent != null ? nav.ClientSize.Width : ClientSize.Width) - 16;
-                int[] widths = new int[titles.Length];
-                int pad = 22;
-                int sum = 0;
-                for (int attempt = 0; attempt < 4; attempt++)
+                int bh = _navButtons[0].Height;
+                int gap = Math.Max(2, bh / 17), group = Math.Max(6, bh / 3), side = Math.Max(4, bh / 4);
+                int y = Math.Max(6, bh / 3);
+                int w = nav.ClientSize.Width - side * 2;
+                for (int i = 0; i < _navButtons.Length; i++)
                 {
-                    sum = 8;
-                    for (int i = 0; i < titles.Length; i++)
-                    {
-                        widths[i] = TextRenderer.MeasureText(titles[i], navFont).Width + pad;
-                        sum += widths[i] + 4;
-                    }
-                    if (sum <= avail) break;
-                    if (pad > 12) pad -= 6; else if (pad > 6) pad -= 4; else break;
-                }
-                if (sum > avail && avail > 0)
-                {
-                    int fixedPart = 8 + titles.Length * 4;
-                    double k = (double)(avail - fixedPart) / (sum - fixedPart);
-                    if (k > 0 && k < 1) for (int i = 0; i < titles.Length; i++) widths[i] = Math.Max(24, (int)(widths[i] * k));
-                }
-                int nx = 8;
-                for (int i = 0; i < titles.Length; i++)
-                {
-                    _navButtons[i].Left = nx; _navButtons[i].Width = widths[i];
-                    nx += widths[i] + 4;
+                    if (Array.IndexOf(groupStart, i) >= 0) y += group;
+                    _navButtons[i].SetBounds(side, y, w, bh);
+                    y += bh + gap;
                 }
                 nav.Invalidate();
             };
@@ -307,12 +323,16 @@ namespace WindowsProcessCleaner
             _navPanel = nav;
             nav.Paint += delegate(object s, PaintEventArgs pe)
             {
+                using (Pen pen = new Pen(_theme.Border))
+                    pe.Graphics.DrawLine(pen, nav.Width - 1, 0, nav.Width - 1, nav.Height);
                 if (_navButtons == null || _currentPage < 0 || _currentPage >= _navButtons.Length) return;
                 Button b = _navButtons[_currentPage];
+                int barW = Math.Max(3, b.Height / 11), inset = b.Height / 4;
+                Rectangle bar = new Rectangle(b.Left - barW - 1, b.Top + inset, barW, b.Height - inset * 2);
+                pe.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                 using (SolidBrush br = new SolidBrush(_theme.Accent))
-                    pe.Graphics.FillRectangle(br, b.Left, nav.Height - 3, b.Width, 3);
-                using (Pen pen = new Pen(_theme.Border))
-                    pe.Graphics.DrawLine(pen, 0, nav.Height - 1, nav.Width, nav.Height - 1);
+                using (GraphicsPath gp = RoundedRect(bar, Math.Max(1, barW / 2)))
+                    pe.Graphics.FillPath(br, gp);
             };
 
             foreach (Control page in _pages)
@@ -324,7 +344,7 @@ namespace WindowsProcessCleaner
 
             Controls.Add(_content);
             Controls.Add(nav);
-            ShowPage(0);
+            ShowPage(PageHome);
 
             FormClosing += delegate(object s, FormClosingEventArgs e)
             {
@@ -332,6 +352,7 @@ namespace WindowsProcessCleaner
                 {
                     e.Cancel = true;
                     Hide();
+                    HomeLeave();
                     string ops = ActiveWriteOps();
                     _tray.ShowBalloonTip(2000, "Windows Process Cleaner",
                         Tr.S("Свёрнуто в трей. Работает в фоне.", "Minimized to tray. Running in background.")
@@ -405,13 +426,15 @@ namespace WindowsProcessCleaner
             }
             _ready = true;
             if (_setBody != null) LayoutSettings(_setBody);   // растяжение списков настроек после масштаба DPI
+            LayoutHomeHead();
             RefreshHistory();
             RefreshPorts();
+            if (!_startHidden && _currentPage == PageHome) HomeEnter();
             BeginInvoke((MethodInvoker)delegate { FillColumns(); });
             // одноразовая до-подгонка после окончательной раскладки окна
             System.Windows.Forms.Timer once = new System.Windows.Forms.Timer();
             once.Interval = 300;
-            once.Tick += delegate { once.Stop(); once.Dispose(); FillColumns(); };
+            once.Tick += delegate { once.Stop(); once.Dispose(); FillColumns(); LayoutHomeHead(); };
             once.Start();
             if (_selfTest)
                 BeginInvoke((MethodInvoker)delegate { DoScan(); });

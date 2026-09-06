@@ -41,6 +41,7 @@ namespace WindowsProcessCleaner
             menu.MenuItems.Add(new MenuItem(Tr.S("Сканировать сейчас", "Scan now"), delegate { ShowWindow(); DoScan(); }));
             menu.MenuItems.Add(new MenuItem(Tr.S("Очистить сейчас", "Clean now"), delegate { RunAutoClean(true); }));
             menu.MenuItems.Add(new MenuItem(Tr.S("Очистить Standby Memory", "Purge Standby Memory"), delegate { DoPurgeOnly(); }));
+            menu.MenuItems.Add(new MenuItem(Tr.S("⚡ Ускорить", "⚡ Boost"), delegate { ShowWindow(); ShowPage(PageHome); DoBoost(); }));
             _miAuto = new MenuItem(Tr.S("Автоочистка по таймеру", "Auto-clean timer"), delegate { ToggleAuto(); });
             menu.MenuItems.Add(_miAuto);
             menu.MenuItems.Add("-");
@@ -55,6 +56,7 @@ namespace WindowsProcessCleaner
             WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
+            if (_currentPage == PageHome) HomeEnter();
         }
 
         private void ExitApp()

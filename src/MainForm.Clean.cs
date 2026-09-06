@@ -481,6 +481,7 @@ namespace WindowsProcessCleaner
             dlg.CancelButton = cancel;
             ApplyThemeTo(dlg);
             lv.BackColor = _theme.Surface; lv.ForeColor = _theme.Text;
+            dlg.HandleCreated += delegate { ApplyTitleBar(dlg); };
             dlg.Shown += delegate { ready = true; refreshSum(); AutoFillLastColumnDeferred(lv); };
 
             ApplyDpiTo(dlg);

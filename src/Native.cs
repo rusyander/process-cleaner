@@ -287,6 +287,10 @@ namespace WindowsProcessCleaner
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX buf);
 
+        // Аптайм системы: Environment.TickCount переполняется через 24,9 дня, 64-битный счётчик — нет.
+        [DllImport("kernel32.dll")]
+        public static extern ulong GetTickCount64();
+
         // --- Тёмный заголовок окна (DWM) ---
         [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
@@ -359,6 +363,55 @@ namespace WindowsProcessCleaner
         {
             if (string.IsNullOrEmpty(p)) return INVALID_FILE_ATTRIBUTES;
             try { return GetFileAttributesW(LongPathOf(p)); } catch { return INVALID_FILE_ATTRIBUTES; }
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint bufLen);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(Microsoft.Win32.SafeHandles.SafeFileHandle h, StringBuilder path, uint bufLen, uint flags);
+
+        // Канонический вид пути: 8.3-псевдонимы раскрыты (RUSYAN~1 → rusyander), junction/symlink в
+        // самом пути заменены целью, регистр — как на диске. Исключение «не чистить эти пути» должно
+        // совпадать с корнем обхода, как бы пользователь его ни записал. Несуществующий или
+        // недоступный путь (и путь на томе без буквы) возвращается как есть, без префикса \\?\.
+        public static string CanonicalPath(string p)
+        {
+            if (string.IsNullOrEmpty(p)) return p;
+            string s = p;
+            try
+            {
+                StringBuilder sb = new StringBuilder(1024);
+                uint n = GetLongPathNameW(LongPathOf(s), sb, (uint)sb.Capacity);
+                if (n > (uint)sb.Capacity) { sb.EnsureCapacity((int)n + 1); n = GetLongPathNameW(LongPathOf(s), sb, (uint)sb.Capacity); }
+                if (n > 0 && n <= (uint)sb.Capacity) s = KeepDos(StripLongPrefix(sb.ToString()), s);
+                Microsoft.Win32.SafeHandles.SafeFileHandle h = CreateFileW(LongPathOf(s), 0, 7u /* READ|WRITE|DELETE */, IntPtr.Zero,
+                                                                           3u /* OPEN_EXISTING */, 0x02000000u /* FILE_FLAG_BACKUP_SEMANTICS */, IntPtr.Zero);
+                if (h == null || h.IsInvalid) { if (h != null) h.Dispose(); return s; }
+                using (h)
+                {
+                    sb.Length = 0;
+                    n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0 /* FILE_NAME_NORMALIZED | VOLUME_NAME_DOS */);
+                    if (n > (uint)sb.Capacity) { sb.EnsureCapacity((int)n + 1); n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0); }
+                    if (n > 0 && n <= (uint)sb.Capacity) s = KeepDos(StripLongPrefix(sb.ToString()), s);
+                }
+            }
+            catch { }
+            return s;
+        }
+
+        private static string StripLongPrefix(string s)
+        {
+            if (s.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + s.Substring(8);
+            if (s.StartsWith(@"\\?\")) return s.Substring(4);
+            return s;
+        }
+
+        // Только пути вида «X:\…» или «\\сервер\…»; «Volume{GUID}\…» (том без буквы) — оставить прежний.
+        private static string KeepDos(string candidate, string fallback)
+        {
+            if (candidate.Length >= 2 && char.IsLetter(candidate[0]) && candidate[1] == ':') return candidate;
+            if (candidate.StartsWith(@"\\") && !candidate.StartsWith(@"\\?\")) return candidate;
+            return fallback;
         }
 
         // --- Удаление в Корзину (SHFileOperation, FOF_ALLOWUNDO) ---

@@ -164,8 +164,8 @@ namespace WindowsProcessCleaner
         // символов, и срез по символьным позициям заголовка отрезал бы Id до «QQDevTools» —
         // `winget upgrade --id … --exact` такого пакета не найдёт. Кириллица, «…» и прочие
         // «неоднозначные» по ширине символы у winget — одна ячейка (проверено на живом выводе).
-        // Суррогатная пара считается за две ячейки (две единицы UTF-16) — точно для эмодзи вне BMP,
-        // единственных таких символов, что встречаются в именах пакетов.
+        // Символы вне BMP (суррогатная пара) считаются по кодовой точке: эмодзи и иероглифы
+        // дополнительных плоскостей — две ячейки, прочие — одна, как считает winget.
         private static readonly int[] _wideRanges = {
             0x1100, 0x115F, 0x231A, 0x231B, 0x2329, 0x232A, 0x23E9, 0x23EC, 0x23F0, 0x23F0, 0x23F3, 0x23F3,
             0x25FD, 0x25FE, 0x2614, 0x2615, 0x2648, 0x2653, 0x267F, 0x267F, 0x2693, 0x2693, 0x26A1, 0x26A1,
@@ -175,6 +175,37 @@ namespace WindowsProcessCleaner
             0x27B0, 0x27B0, 0x27BF, 0x27BF, 0x2B1B, 0x2B1C, 0x2B50, 0x2B50, 0x2B55, 0x2B55, 0x2E80, 0x303E,
             0x3041, 0x3247, 0x3250, 0x33FF, 0x3400, 0x4DBF, 0x4E00, 0x9FFF, 0xA000, 0xA4CF, 0xA960, 0xA97F, 0xAC00, 0xD7A3,
             0xF900, 0xFAFF, 0xFE10, 0xFE19, 0xFE30, 0xFE6F, 0xFF00, 0xFF60, 0xFFE0, 0xFFE6 };
+
+        // Широкие (W) кодовые точки вне BMP: иероглифы дополнительных плоскостей, кана, эмодзи.
+        private static readonly int[] _wideSupp = {
+            0x16FE0, 0x16FE4, 0x17000, 0x18AFF, 0x1B000, 0x1B2FF, 0x1F004, 0x1F004, 0x1F0CF, 0x1F0CF,
+            0x1F18E, 0x1F18E, 0x1F191, 0x1F19A, 0x1F200, 0x1F202, 0x1F210, 0x1F23B, 0x1F240, 0x1F248,
+            0x1F250, 0x1F251, 0x1F260, 0x1F265, 0x1F300, 0x1F320, 0x1F32D, 0x1F335, 0x1F337, 0x1F37C,
+            0x1F37E, 0x1F393, 0x1F3A0, 0x1F3CA, 0x1F3CF, 0x1F3D3, 0x1F3E0, 0x1F3F0, 0x1F3F4, 0x1F3F4,
+            0x1F3F8, 0x1F43E, 0x1F440, 0x1F440, 0x1F442, 0x1F4FC, 0x1F4FF, 0x1F53D, 0x1F54B, 0x1F54E,
+            0x1F550, 0x1F567, 0x1F57A, 0x1F57A, 0x1F595, 0x1F596, 0x1F5A4, 0x1F5A4, 0x1F5FB, 0x1F64F,
+            0x1F680, 0x1F6C5, 0x1F6CC, 0x1F6CC, 0x1F6D0, 0x1F6D2, 0x1F6D5, 0x1F6D7, 0x1F6EB, 0x1F6EC,
+            0x1F6F4, 0x1F6FC, 0x1F7E0, 0x1F7EB, 0x1F90C, 0x1F93A, 0x1F93C, 0x1F945, 0x1F947, 0x1F9FF,
+            0x1FA70, 0x1FAFF, 0x20000, 0x2FFFD, 0x30000, 0x3FFFD };
+
+        // Ширина символа на позиции i с учётом суррогатных пар: старшая половина несёт ширину
+        // всей кодовой точки, младшая — 0 (уже учтена), одиночный суррогат — 1.
+        public static int CellWidthAt(string s, int i)
+        {
+            char c = s[i];
+            if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+            {
+                int cp = char.ConvertToUtf32(c, s[i + 1]);
+                for (int k = 0; k < _wideSupp.Length; k += 2)
+                {
+                    if (cp < _wideSupp[k]) return 1;
+                    if (cp <= _wideSupp[k + 1]) return 2;
+                }
+                return 1;
+            }
+            if (char.IsLowSurrogate(c) && i > 0 && char.IsHighSurrogate(s[i - 1])) return 0;
+            return CellWidth(c);
+        }
 
         public static int CellWidth(char c)
         {
@@ -195,8 +226,8 @@ namespace WindowsProcessCleaner
             int cells = 0;
             for (int i = 0; i < line.Length; i++)
             {
-                if (cells >= cell) return i;
-                cells += CellWidth(line[i]);
+                if (cells >= cell && !(char.IsLowSurrogate(line[i]) && i > 0 && char.IsHighSurrogate(line[i - 1]))) return i;
+                cells += CellWidthAt(line, i);
             }
             return line.Length;
         }
@@ -219,7 +250,7 @@ namespace WindowsProcessCleaner
                     cell += j - i;
                     i = j;
                 }
-                else { cell += CellWidth(header[i]); i++; }
+                else { cell += CellWidthAt(header, i); i++; }
             }
             return starts;
         }

@@ -58,19 +58,36 @@ namespace WindowsProcessCleaner
             return ((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime;
         }
 
-        // Пути из настройки «Не чистить эти пути»: полный путь, без хвостового «\», в нижнем
-        // регистре. Считается один раз на обход, не на файл.
+        // Пути из настройки «Не чистить эти пути»: полный канонический путь (8.3-имена и junction
+        // раскрыты — см. Native.CanonicalPath), без хвостового «\», в нижнем регистре. Считается
+        // один раз на обход, не на файл; результат живёт минуту (папка могла появиться позже).
+        private List<string> _exclCache;
+        private string _exclKey;
+        private DateTime _exclAt;
+
         private List<string> ExcludeList()
         {
+            string key = string.Join("\n", Config.CleanExclude.ToArray());
+            if (_exclCache != null && key == _exclKey && (DateTime.Now - _exclAt).TotalSeconds < 60) return _exclCache;
             List<string> l = new List<string>();
             foreach (string ex in Config.CleanExclude)
             {
                 if (string.IsNullOrEmpty(ex)) continue;
                 string exl;
-                try { exl = Path.GetFullPath(ex.Trim()).TrimEnd('\\').ToLowerInvariant(); } catch { continue; }
+                try { exl = Native.CanonicalPath(Path.GetFullPath(ex.Trim())).TrimEnd('\\').ToLowerInvariant(); } catch { continue; }
                 if (exl.Length > 0) l.Add(exl);
             }
+            _exclCache = l; _exclKey = key; _exclAt = DateTime.Now;
             return l;
+        }
+
+        // Корень обхода в том же каноническом виде, что и исключения: иначе цель, записанная через
+        // 8.3-имя (%TEMP% = C:\Users\RUSYAN~1\…) или junction, не совпадала с исключением по префиксу.
+        // Вызывается после проверки, что сам корень — не точка повторного разбора.
+        private static string CanonicalRoot(string rootPath)
+        {
+            string c = NormalizeDir(Native.CanonicalPath(rootPath));
+            return c ?? rootPath;
         }
 
         // Путь равен исключению или лежит внутри него (pathLower — полный путь в нижнем регистре).
@@ -94,6 +111,7 @@ namespace WindowsProcessCleaner
             uint ra = Native.AttributesOf(rootPath);
             if (ra == Native.INVALID_FILE_ATTRIBUTES || (ra & Native.FILE_ATTRIBUTE_DIRECTORY) == 0
                 || (ra & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0) return;
+            rootPath = CanonicalRoot(rootPath);
 
             string mask = string.IsNullOrEmpty(t.Mask) ? "*" : t.Mask;
             long cutoff = t.MinAgeMinutes > 0
@@ -293,6 +311,7 @@ namespace WindowsProcessCleaner
             if (pl.StartsWith(_dir.ToLowerInvariant())) return false;
 
             if (IsExcluded(pl, ExcludeList())) return false;
+            if (IsExcluded(Native.CanonicalPath(p).TrimEnd('\\').ToLowerInvariant(), ExcludeList())) return false;
             return true;
         }
 
@@ -344,6 +363,7 @@ namespace WindowsProcessCleaner
             if (ra == Native.INVALID_FILE_ATTRIBUTES || (ra & Native.FILE_ATTRIBUTE_DIRECTORY) == 0) return 0;
             // цель сама junction/symlink: за ней чужая папка — не трогаем ни содержимое, ни ссылку
             if ((ra & Native.FILE_ATTRIBUTE_REPARSE_POINT) != 0) return 0;
+            rootPath = CanonicalRoot(rootPath);
 
             List<string> dirs = new List<string>();
             int errors = 0;

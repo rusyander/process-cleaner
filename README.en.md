@@ -22,8 +22,11 @@ English UI, tray operation and a schedule.
 
 ## What the window contains
 
-| Tab | What it does |
+Sections live in a sidebar on the left, as in Microsoft PC Manager.
+
+| Section | What it does |
 |---|---|
+| **Home** | memory and disk cards, the Boost button, a system health check with actions |
 | **Scan** | finds abandoned processes and terminates them, purges Standby Memory |
 | **Dev Cleanup** | bulk-kills dev runtimes and frees busy dev ports |
 | **Disk Cleanup** | analyzes and deletes junk by category, optional winapp2 rules |
@@ -33,6 +36,8 @@ English UI, tray operation and a schedule.
 | **Programs** | installed software list, uninstall via the program's own uninstaller |
 | **Updates** | finds outdated programs and updates them via winget / Chocolatey |
 | **Startup** | what launches with Windows, enable and disable |
+| **Windows bloat** | telemetry, ads, Copilot, surplus Store apps, services and features: disable, remove, restore |
+| **Tools** | Windows quick fixes (DNS, network, SFC, DISM, hibernation…), protection, shortcuts to built-in tools |
 | **Settings** | all thresholds, lists and parameters |
 | **History** | what was cleaned and when |
 
@@ -180,6 +185,24 @@ create services.
 ---
 
 ## Features
+
+### Home
+The start screen, in the spirit of Microsoft PC Manager: three cards (RAM, system drive,
+status after the last check), a big **⚡ Boost** button and a table of checks.
+
+- **Boost** — terminates abandoned processes (the current scan candidates) and purges
+  Standby Memory; the result is shown under the cards and written to history. With the
+  "and temporary files" box ticked it shows the list of categories and asks before deleting.
+- **Smart boost** — a checkbox right there and in Settings: when memory usage exceeds the
+  threshold (90 % by default) the app purges Standby Memory on its own, at most once every
+  15 minutes, and says so with a tray hint.
+- **Check health** — 12 checks in a few seconds: memory, system drive, uptime, hibernation
+  file, startup entries, abandoned processes, size of temporary files, the Downloads
+  folder, Defender (enabled, signature age, last scan), the last Windows update, restore
+  points, program updates. Every row has a status (fine / tip / attention) and an action:
+  double-click opens the relevant tab, runs a tool, or runs the boost itself. The status is
+  colour-coded (green / blue / orange). The check runs when Home is first shown and repeats
+  on its own once the last one is older than an hour.
 
 ### Scanning
 For each process it collects: name, PID, PPID, path, uptime, CPU %, RAM, whether
@@ -331,7 +354,10 @@ them through the app — the program's own uninstaller is launched. Several chec
 programs are uninstalled one after another: the next uninstaller starts once the previous
 one has exited (two MSI installers cannot run at the same time). When an uninstaller is
 missing (the program was deleted together with its folder, the registry entry remained),
-the app reports it with the path; the list is re-read when the run is over.
+the app reports it with the path; the list is re-read when the run is over. Entries with
+the same name (two versions of one program) are shown separately. When a bootstrapper
+uninstaller exits at once and leaves a child process running, the app waits for its
+descendants and for the registry entry to disappear before re-reading the list.
 
 ### Program updates
 This tab finds outdated programs across the machine and updates them. Flow:
@@ -400,6 +426,8 @@ is read straight from the profile files.
 **What is found automatically.** Every profile of every installed Chromium-based browser:
 Chrome (including Beta / Dev / Canary), Edge, Yandex Browser, Brave, Vivaldi, Opera and
 Opera GX, Chromium. Each profile is shown under its real name, not its folder name.
+Firefox is not supported: its bookmarks and sessions live in SQLite (`places.sqlite`) while
+the tab reads Chromium formats; the Firefox cache is still cleaned by Disk cleanup.
 
 **What is shown for each profile**
 
@@ -463,6 +491,32 @@ entries disabled in Task Manager or in Settings → Startup apps are shown unche
 shortcuts) are marked orange and can be toggled too. Nothing is deleted: the program never
 removes registry values or shortcuts.
 
+### Windows bloat
+A catalogue of roughly 90 items in eleven groups: AI (Copilot, Recall, Click to Do,
+Cortana), telemetry and diagnostics, ads and tips (including Bing web search in Start),
+widgets and news, preinstalled Store apps, third-party stubs (Candy Crush, TikTok,
+Spotify…), Xbox and gaming, OneDrive / Teams / Phone Link, Windows services, Windows
+features and PowerToys modules (read from its `settings.json`). A checkbox tree on the
+left; on the right, for every item: what it is, why disable it, what you risk, the
+recommendation and exactly what will be done (which registry values, services, scheduled
+tasks, packages).
+
+Only universal junk is checked by default: telemetry, ads and tips, Bing in Start,
+widgets, dead and promotional Store apps, unneeded services and features (PowerShell 2.0,
+SMB 1.0, XPS…). Everything debatable — Copilot, Recall, Xbox Game Bar, OneDrive, Teams,
+Phone Link, search indexing — is listed unchecked with a ⚠ warning.
+
+Buttons: **"Check state"** (reads the registry, services, scheduled tasks, Store packages
+and — with administrator rights only — features via DISM), **"Disable checked"**,
+**"Remove checked"**, **"Restore checked"**, "Check recommended", "Uncheck all". Before
+the first action on an item its previous state is saved to `debloat-snapshot.json`;
+"Restore" rolls back from that snapshot. For Store apps "Disable" removes the package for
+the current user (reversible: "Restore" re-registers it from the Windows image), "Remove"
+removes it for all users and deprovisions it from the image (only the Microsoft Store can
+bring it back; the app opens a Store search). Without administrator rights only the
+current-user part runs (HKCU, Store apps, PowerToys); the rest is marked "needs
+administrator rights" and, if attempted, is logged as an error.
+
 ### Docker
 A tab for Docker cleanup (requires the Docker CLI + a running daemon). Buttons: disk
 usage overview (`docker system df`), remove stopped containers, unused images, unused
@@ -476,7 +530,35 @@ removed (`prune`) — running containers and used images are never touched.
 > the vhdx via `diskpart compact vdisk`, showing size before/after. All running
 > containers are stopped in the process.
 
+What to remove before compacting is set by the list next to the button: "nothing",
+"safe" (stopped containers, untagged images, build cache — the default), "+ all unused
+images" or "everything unused, volumes included". The last option wipes database and
+other container data kept in volumes, which the app warns about separately.
+
 Kubernetes is not included (its cleanup affects a live cluster).
+
+### Tools
+Built-in Windows tools behind one button each, with an output log at the bottom of the
+page and a "Stop" button for long operations.
+
+- **Quick fixes:** flush the DNS cache, reset the network (Winsock, TCP/IP), restart
+  Explorer, rebuild the icon cache and the font cache, `sfc /scannow`, `DISM
+  /RestoreHealth`, check the system drive (chkdsk on next boot), reset Windows Update
+  components, create a restore point, turn hibernation on/off (the button shows the size of
+  hiberfil.sys), clear the print queue, reset the Microsoft Store cache, clear the clipboard.
+- **Protection:** Defender quick scan, update antivirus signatures, check for Windows updates.
+- **Windows tools:** 28 shortcuts — Windows Security, Disk Cleanup, Storage settings, Task
+  Manager, Resource Monitor, Device Manager, Services, Event Viewer, Reliability Monitor,
+  Windows Update, Programs and Features, Windows Features, System Restore, System
+  Protection, startup apps, network connections, power options, environment variables,
+  msconfig, Disk Management, msinfo32, dxdiag, memory diagnostic, regedit, Control Panel,
+  Settings, Terminal.
+- **Search** — the box above the buttons filters them by title and description (Esc clears);
+  sections without matches are hidden.
+
+Anything that changes the system asks first; anything that needs administrator rights
+offers to restart as administrator. The label at the bottom of the sidebar always shows
+whether those rights are present.
 
 ### Interface language
 Russian / English — switchable in settings (applied after restart). The documentation
@@ -489,7 +571,7 @@ uninstallation are **never** run by the timer — manual only.
 
 ### System tray
 The tray icon changes color: green — clean, orange — candidates found. Double-click
-opens the window. Right-click menu: Scan, Clean, Purge Standby Memory, toggle
+opens the window. Right-click menu: Scan, Clean, Purge Standby Memory, ⚡ Boost, toggle
 auto-clean, restart as administrator, exit. Closing the window minimizes the app to
 tray (it keeps running in the background). If an irreversible operation is running at
 that moment (deleting files, moving to the Recycle Bin, installing updates, Docker prune
@@ -504,8 +586,8 @@ A checkbox in settings. Implemented via **Task Scheduler** with highest privileg
 ### Themes
 Light / dark / **system** (default — follows the Windows theme, including a live dark/light
 switch without a restart). Switchable in settings, applied immediately, including the window
-title bar. Lists, trees, text fields and drop-downs get a soft rounded border in the theme
-colour instead of the sharp system line; buttons are drawn with anti-aliased rounded corners.
+title bar and lists that are already filled (rows never keep the previous theme's colours).
+Lists, trees, text fields and drop-downs get a soft rounded border in the theme colour instead of the sharp system line; buttons are drawn with anti-aliased rounded corners.
 The opened drop-down list is themed too: roomy rows, the same highlight as the lists, a dark
 list window in the dark theme. The multi-line lists on the Settings page stretch to the free
 window height.
@@ -517,11 +599,13 @@ window height.
 - **Automation** — process auto-clean interval (1..24 h), auto-clean on/off, "global: don't
   touch Program Files", start with Windows, start minimized to tray.
 - **Performance** — background CPU monitoring and its period (5..300 s, 15 by default),
-  emptying the working sets of all processes (off by default — it slows the system down).
+  emptying the working sets of all processes (off by default — it slows the system down),
+  smart boost and its RAM-usage threshold (50..99 %, 90 by default).
   Idle time is measured only by monitoring ticks: with monitoring off there can be no
   termination candidates, and the scan summary says so explicitly.
 - **Disk cleanup** — "keep files newer than N minutes", cleanup logging, list of paths to
-  never clean.
+  never clean (a path may be written via its short 8.3 name or a junction — the real on-disk
+  path is compared).
 - **Program updates** — show packages with an unknown installed version, query Chocolatey,
   how many packages to hand the manager per command (1..20), list of packages to never
   offer for update.
@@ -556,6 +640,7 @@ settings opens it.
 |---|---|
 | `config.json` | all settings, including the excluded category folders. Written through a temporary file so a crash cannot leave an empty config; a damaged copy is kept as `config.json.corrupt` |
 | `history.json` | process-cleanup history |
+| `debloat-snapshot.json` | previous states of the "Windows bloat" items, used by "Restore" |
 | `clean-YYYY-MM.log` | disk-cleanup log (what was deleted and how much was freed) |
 | `updates-YYYY-MM.log` | program-update log |
 | `winapp2.ini` | the downloaded winapp2 rule database, if you fetched it |
@@ -616,7 +701,7 @@ The app always runs as administrator. This is required to purge Standby Memory v
 
 | File | Purpose |
 |------|---------|
-| `src\*.cs` | application code, one file per area: `Program.cs` (entry, switches), `Engine*.cs` (logic: processes, cleanup, disk, drivers, winapp2, updates, programs, startup, Docker), `MainForm*.cs` (window, one file per tab), `Native.cs` (WinAPI), `Theme.cs`, `Json.cs`, `Browser*.cs`, `FastListView.cs` |
+| `src\*.cs` | application code, one file per area: `Program.cs` (entry, switches), `Engine*.cs` (logic: processes, cleanup, disk, drivers, winapp2, updates, programs, startup, Docker, health check, tools), `MainForm*.cs` (window, one file per section), `Native.cs` (WinAPI), `Theme.cs`, `Json.cs`, `Browser*.cs`, `FastListView.cs` |
 | `app.manifest` | manifest (requireAdministrator, DPI) |
 | `icon.ico` | application icon (embedded into the exe) |
 | `build.bat` | builds all `src\*.cs` via the built-in csc.exe |

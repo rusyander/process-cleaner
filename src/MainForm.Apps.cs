@@ -148,8 +148,8 @@ namespace WindowsProcessCleaner
             // (нет команды, деинсталлятор удалён вместе с папкой игры) раньше глотался молча.
             Thread t = new Thread(delegate()
             {
-                int launched = 0;
-                List<string> failed = new List<string>();
+                int removed = 0;
+                List<string> failed = new List<string>(), kept = new List<string>();
                 for (int i = 0; i < queue.Count; i++)
                 {
                     InstalledApp a = queue[i];
@@ -159,21 +159,22 @@ namespace WindowsProcessCleaner
                     try { err = _engine.RunUninstall(a, out p); }
                     catch (Exception ex) { err = ex.Message; }
                     if (err != null) { failed.Add(a.Name + " — " + err); continue; }
-                    launched++;
-                    if (p != null)
-                    {
-                        try { p.WaitForExit(); } catch { }
-                        p.Dispose();
-                    }
+                    // Ждём не только запущенный процесс, но и его потомков, и исчезновение записи
+                    // в реестре: bootstrapper-ы возвращаются сразу, а список обновлялся раньше времени.
+                    bool gone = false;
+                    try { gone = _engine.WaitUninstall(a, p, 45 * 60 * 1000); } catch { }
+                    if (p != null) p.Dispose();
+                    if (gone) removed++; else kept.Add(a.Name);
                 }
                 Interlocked.Exchange(ref _uninstBusy, 0);
-                int launchedCopy = launched;
+                int removedCopy = removed;
                 UiPost(delegate
                 {
                     if (failed.Count > 0)
                         MsgError(Tr.S("Не удалось запустить деинсталлятор:\r\n", "Failed to launch the uninstaller:\r\n") + string.Join("\r\n", failed.ToArray()));
-                    _appsNote = Tr.S("   ·   деинсталляция завершена: запущено ", "   ·   uninstall finished: launched ") + launchedCopy +
-                        (failed.Count > 0 ? Tr.S(", не удалось ", ", failed ") + failed.Count : "");
+                    _appsNote = Tr.S("   ·   удалено: ", "   ·   removed: ") + removedCopy
+                        + (kept.Count > 0 ? Tr.S("   ·   осталось (отменено или ещё идёт): ", "   ·   still installed (cancelled or still running): ") + string.Join(", ", kept.ToArray()) : "")
+                        + (failed.Count > 0 ? Tr.S("   ·   не удалось запустить: ", "   ·   failed to launch: ") + failed.Count : "");
                     RefreshApps(true);
                 });
             });

@@ -70,6 +70,9 @@ namespace WindowsProcessCleaner
             _numMonInterval = MakeNum(body, Tr.S("Период мониторинга, с (5..300):", "Monitor period, s (5..300):"), lx, cx, ref y, 5, 300, 0, 5);
             _chkEmptyWs = MakeCheck(body, Tr.S("Сбрасывать рабочие наборы всех процессов (замедляет систему)",
                                                "Empty working sets of all processes (slows the system down)"), lx, ref y);
+            _chkSmartBoost = MakeCheck(body, Tr.S("Умное ускорение: чистить Standby Memory, когда RAM занята сильнее порога",
+                                                  "Smart boost: purge Standby Memory when RAM usage exceeds the threshold"), lx, ref y);
+            _numSmartBoost = MakeNum(body, Tr.S("Порог умного ускорения, % RAM (50..99):", "Smart boost threshold, % RAM (50..99):"), lx, cx, ref y, 50, 99, 0, 5);
 
             y += 12;
             SectionHeader(body, Tr.S("Очистка диска", "Disk cleanup"), lx, ref y);
@@ -245,6 +248,8 @@ namespace WindowsProcessCleaner
             if (_numMonInterval != null)
                 _numMonInterval.Value = Math.Min(300, Math.Max(5, c.MonitorIntervalSeconds));
             if (_chkEmptyWs != null) _chkEmptyWs.Checked = c.EmptyWorkingSets;
+            if (_chkSmartBoost != null) _chkSmartBoost.Checked = c.SmartBoostEnabled;
+            if (_numSmartBoost != null) _numSmartBoost.Value = Math.Min(99, Math.Max(50, c.SmartBoostPercent));
             if (_numSkipRecent != null)
                 _numSkipRecent.Value = Math.Min(1440, Math.Max(0, c.CleanSkipRecentMinutes));
             if (_chkCleanLog != null) _chkCleanLog.Checked = c.CleanLogEnabled;
@@ -297,6 +302,9 @@ namespace WindowsProcessCleaner
             c.DevPorts = ParsePorts(_txtPorts.Text);
             c.Theme = ThemeModeFromCombo();
             c.EmptyWorkingSets = _chkEmptyWs.Checked;
+            c.SmartBoostEnabled = _chkSmartBoost.Checked;
+            c.SmartBoostPercent = (int)_numSmartBoost.Value;
+            SyncSmartHome();
             c.CleanSkipRecentMinutes = (int)_numSkipRecent.Value;
             c.CleanLogEnabled = _chkCleanLog.Checked;
             c.CleanExclude = ParseLines(_txtCleanExclude.Text);

@@ -101,9 +101,24 @@ namespace WindowsProcessCleaner
 
         private static string Lf(string s) { return s == null ? "" : s.Replace("\r\n", "\n").Replace("\n", "\r\n"); }
 
-        // ОДНА КНОПКА: очистить всё неиспользуемое -> остановить Docker ->
+        // Что удалить перед сжатием: 0 = ничего, 1 = безопасное (остановленные контейнеры, образы
+        // без тега, кэш сборки), 2 = + все неиспользуемые образы, 3 = всё, включая неиспользуемые
+        // тома. Раньше кнопка «сжать диск» всегда делала system prune -a --volumes: сжатие этого
+        // не требует, а неиспользуемые тома — это базы остановленных проектов, их так не теряют.
+        public static string[] DockerPruneCommands(int scope)
+        {
+            switch (scope)
+            {
+                case 1: return new string[] { "container prune -f", "image prune -f", "builder prune -a -f" };
+                case 2: return new string[] { "container prune -f", "image prune -a -f", "builder prune -a -f" };
+                case 3: return new string[] { "system prune -a -f --volumes", "builder prune -a -f" };
+                default: return new string[0];
+            }
+        }
+
+        // ОДНА КНОПКА: удалить выбранное (scope) -> остановить Docker ->
         // сжать vhdx (реально вернуть место Windows) -> перезапустить Docker.
-        public string CompactDockerDisk()
+        public string CompactDockerDisk(int scope)
         {
             StringBuilder sb = new StringBuilder();
             int ec;
@@ -120,18 +135,23 @@ namespace WindowsProcessCleaner
                 sb.AppendLine(Lf(RunCapture("docker", "system df", out ec)));
                 sb.AppendLine();
 
-                // 1) очистка всего неиспользуемого (контейнеры/образы/тома/сети/кэш сборки)
-                sb.AppendLine(Tr.S("=== Очистка неиспользуемого ===", "=== Pruning unused ==="));
-                sb.AppendLine("> docker system prune -a -f --volumes");
-                sb.AppendLine(Lf(RunCapture("docker", "system prune -a -f --volumes", out ec)));
-                sb.AppendLine("> docker builder prune -a -f");
-                sb.AppendLine(Lf(RunCapture("docker", "builder prune -a -f", out ec)));
-                sb.AppendLine();
+                // 1) очистка перед сжатием — ровно то, что выбрал пользователь
+                string[] cmds = DockerPruneCommands(scope);
+                if (cmds.Length > 0)
+                {
+                    sb.AppendLine(Tr.S("=== Очистка перед сжатием ===", "=== Pruning before compaction ==="));
+                    foreach (string cmd in cmds)
+                    {
+                        sb.AppendLine("> docker " + cmd);
+                        sb.AppendLine(Lf(RunCapture("docker", cmd, out ec)));
+                    }
+                    sb.AppendLine();
+                }
             }
             else
             {
-                sb.AppendLine(Tr.S("Демон Docker не отвечает — prune пропущен, будет только сжатие диска.",
-                                   "The Docker daemon is not responding — prune skipped, only the disk will be compacted."));
+                sb.AppendLine(Tr.S("Демон Docker не отвечает — очистка пропущена, будет только сжатие диска.",
+                                   "The Docker daemon is not responding — pruning skipped, only the disk will be compacted."));
                 sb.AppendLine(Lf(ver));
                 sb.AppendLine();
             }
